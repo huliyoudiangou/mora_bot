@@ -1,0 +1,16 @@
+services:
+  mora:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mora-bot:latest
+    container_name: mora-bot
+    restart: unless-stopped
+    # 直接复用你已配置好的 .env（Token/API Key/Pepper/管理员 ID 都在里面）
+    env_file:
+      - .env
+    # DATABASE_URL 为相对路径 data/mora_bot.db 时，
+    # 在容器 workdir /app 下会自动落到 /app/data/mora_bot.db，与下方 volume 对应
+    volumes:
+      - ./data:/app/data
+    stop_grace_period: 10s
