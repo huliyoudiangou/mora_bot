@@ -33,6 +33,7 @@ const (
 	sessAdminLineAdd   = "admin_line_add"   // 添加线路：收 URL
 	sessAdminLineDel   = "admin_line_del"   // 删除线路：收 id 或 URL
 	sessAdminQuota     = "admin_set_quota"  // 设置积分兑换邀请码配额：收整数
+	sessAdminRegQuota  = "admin_reg_quota"  // 设置开注名额：收非负整数（>0 自动开启新一轮开注）
 	sessAdminDramaRej  = "admin_drama_rej"  // 求剧工单驳回：收理由（Data.req_id/msg_id）
 
 	// 账号安全会话
@@ -41,7 +42,7 @@ const (
 	sessUnbind      = "account_unbind"        // 解绑：第 1 步安全码 → 第 2 步确认
 )
 
-// cmdRegister /register 注册新 Jellyfin 账号（开注时免邀请码，否则需邀请码）。
+// cmdRegister /register 注册新 Jellyfin 账号（开注且有名额时免邀请码，否则需邀请码）。
 func (r *Router) cmdRegister(ctx context.Context, msg *Message, args []string) {
 	deps := r.deps
 	u, err := getLocal(ctx, deps, msg.From)
@@ -53,11 +54,15 @@ func (r *Router) cmdRegister(ctx context.Context, msg *Message, args []string) {
 		sendText(ctx, deps, msg.ChatID, "你已有关联的 Jellyfin 账号，无需重复注册。如需更换请先解绑。")
 		return
 	}
-	if registrationOpen(deps) {
-		// 开注：免邀请码，直接收用户名
+	if registrationAvailable(ctx, deps) {
+		// 开注：免邀请码，直接收用户名（显示剩余名额，-1=不限）
+		rem := "不限"
+		if n := openRegRemaining(deps); n >= 0 {
+			rem = fmt.Sprintf("%d", n)
+		}
 		deps.Sessions.Begin(msg.From.ID, sessRegUsername)
 		sendText(ctx, deps, msg.ChatID,
-			"📝 注册新账号（开注中，免邀请码）\n第 1/3 步：请设置你的 Jellyfin 用户名。")
+			fmt.Sprintf("📝 注册新账号（开注中，免邀请码）\n剩余名额：%s\n第 1/3 步：请设置你的 Jellyfin 用户名。", rem))
 		return
 	}
 	deps.Sessions.Begin(msg.From.ID, sessRegInvite)
@@ -142,8 +147,25 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 	}
 	uName, _ := sess.Data["username"].(string)
 	pwd, _ := sess.Data["pwd"].(string)
+	// 开注模式（无邀请码）：先占用一个开注名额（设有名额时），防止超发
+	openMode := true
+	if id, ok := sess.Data["invite_id"].(uint); ok && id != 0 {
+		openMode = false
+	}
+	slotTaken := false
+	if openMode {
+		if !consumeOpenRegSlot(ctx, deps) {
+			deps.Sessions.Clear(msg.From.ID)
+			sendText(ctx, deps, msg.ChatID, "❌ 开注名额已用完，本轮注册已自动关闭。如需注册请获取邀请码后重新发送 /register。")
+			return
+		}
+		slotTaken = true
+	}
 	ju, err := deps.JF.CreateUser(ctx, uName, pwd)
 	if err != nil {
+		if slotTaken {
+			refundOpenRegSlot(deps) // 创建失败，归还名额
+		}
 		sendText(ctx, deps, msg.ChatID, "创建 Jellyfin 用户失败："+err.Error())
 		deps.Sessions.Clear(msg.From.ID)
 		return

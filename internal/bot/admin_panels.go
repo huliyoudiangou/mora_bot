@@ -17,9 +17,11 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	cfgKeyInvitePrice     = "invite_code_price"
-	cfgKeyRenewalPrice    = "renewal_code_price"
+	cfgKeyInvitePrice     = "invite_code_price"         // 邀请码积分价
+	cfgKeyRenewalPrice    = "renewal_code_price"        // 续期码积分价
 	cfgKeyRegOpen         = "registration_open"         // "1"=开注（免邀请码注册）
+	cfgKeyRegQuota        = "registration_quota"        // 开注名额（0=不限）
+	cfgKeyRegUsed         = "registration_open_used"    // 本轮开注已用名额
 	cfgKeyExchangeEnabled = "exchange_invite_enabled"   // "1"=允许积分兑换邀请码（默认开）
 	cfgKeyExchangeQuota   = "exchange_invite_quota"     // 积分兑换邀请码配额，0=不限
 )
@@ -121,6 +123,123 @@ func exchangeInviteRemaining(deps *HandlerDeps) int {
 	return r
 }
 
+// openRegQuota 开注名额（0=不限）。
+func openRegQuota(deps *HandlerDeps) int {
+	return configGetInt(deps, cfgKeyRegQuota, 0)
+}
+
+// openRegUsed 本轮开注已注册名额数。
+func openRegUsed(deps *HandlerDeps) int {
+	return configGetInt(deps, cfgKeyRegUsed, 0)
+}
+
+// openRegRemaining 剩余开注名额（-1 表示不限）。
+func openRegRemaining(deps *HandlerDeps) int {
+	q := openRegQuota(deps)
+	if q <= 0 {
+		return -1
+	}
+	r := q - openRegUsed(deps)
+	if r < 0 {
+		r = 0
+	}
+	return r
+}
+
+// openRegHasSlot 开注模式下是否还有剩余名额（名额不限时恒为 true）。
+func openRegHasSlot(deps *HandlerDeps) bool {
+	rem := openRegRemaining(deps)
+	return rem < 0 || rem > 0
+}
+
+// ensureOpenRegUsedRow 保证开注已用计数行存在（初值 0）。
+func ensureOpenRegUsedRow(deps *HandlerDeps) {
+	if deps == nil || deps.DB == nil {
+		return
+	}
+	deps.DB.Where("`key` = ?", cfgKeyRegUsed).
+		FirstOrCreate(&db.SystemConfig{Key: cfgKeyRegUsed, Value: "0"})
+}
+
+// consumeOpenRegSlot 开注模式下占用一个名额（设有名额上限时）。
+// 通过单条条件 UPDATE 保证并发下不超发；名额耗尽时自动关闭开注并通知管理员。
+// 返回是否成功占用（名额不限时恒成功）。
+func consumeOpenRegSlot(ctx context.Context, deps *HandlerDeps) bool {
+	if deps == nil || deps.DB == nil {
+		return false
+	}
+	q := openRegQuota(deps)
+	if q <= 0 {
+		return true // 不限名额
+	}
+	ensureOpenRegUsedRow(deps)
+	res := deps.DB.Model(&db.SystemConfig{}).
+		Where("`key` = ? AND CAST(value AS INTEGER) < ?", cfgKeyRegUsed, q).
+		Update("value", gorm.Expr("CAST(value AS INTEGER) + 1"))
+	if res.Error != nil || res.RowsAffected == 0 {
+		// 名额已用尽（写库异常也按用尽处理）：自动关闭开注
+		if registrationOpen(deps) {
+			closeOpenRegistration(ctx, deps, "名额耗尽")
+		}
+		return false
+	}
+	if openRegUsed(deps) >= q {
+		// 刚好占用最后一个名额：自动关闭
+		closeOpenRegistration(ctx, deps, "名额耗尽")
+	}
+	return true
+}
+
+// refundOpenRegSlot 归还一个开注名额（注册中途失败回退计数；不限名额时无操作）。
+func refundOpenRegSlot(deps *HandlerDeps) {
+	if deps == nil || deps.DB == nil || openRegQuota(deps) <= 0 {
+		return
+	}
+	deps.DB.Model(&db.SystemConfig{}).
+		Where("`key` = ? AND CAST(value AS INTEGER) > 0", cfgKeyRegUsed).
+		Update("value", gorm.Expr("CAST(value AS INTEGER) - 1"))
+}
+
+// resetOpenRegRound 开启新一轮开注：已用名额计数清零。
+func resetOpenRegRound(deps *HandlerDeps) {
+	if deps == nil || deps.DB == nil {
+		return
+	}
+	_ = configSet(deps, cfgKeyRegUsed, "0")
+}
+
+// closeOpenRegistration 关闭开注（恢复需邀请码），写审计并私聊通知管理员。
+func closeOpenRegistration(ctx context.Context, deps *HandlerDeps, reason string) {
+	if deps == nil || deps.DB == nil {
+		return
+	}
+	if err := configSet(deps, cfgKeyRegOpen, "0"); err != nil {
+		return
+	}
+	_ = db.WriteAudit(deps.DB, 0, "reg_auto_close", "system_config", cfgKeyRegOpen, "开注自动关闭："+reason)
+	if deps.Snd == nil {
+		return
+	}
+	for _, id := range deps.SuperAdminIDs {
+		sendText(ctx, deps, id,
+			"📢 开注名额已用完，注册已自动关闭（恢复需邀请码）。\n"+
+				"如需继续开注：/admin → 🔓 注册与兑换 → 🎯 设置开注名额。")
+	}
+}
+
+// registrationAvailable 开注是否对用户可用：开注开启且有剩余名额。
+// 名额已用尽时自动关闭开注并通知管理员，返回 false。
+func registrationAvailable(ctx context.Context, deps *HandlerDeps) bool {
+	if !registrationOpen(deps) {
+		return false
+	}
+	if openRegHasSlot(deps) {
+		return true
+	}
+	closeOpenRegistration(ctx, deps, "名额耗尽")
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // 白名单子面板
 // ---------------------------------------------------------------------------
@@ -189,31 +308,37 @@ func linesPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 	return text, rows
 }
 
-// regPanel 注册与兑换子面板：开注 / 积分兑换邀请码开关与配额。
+// regPanel 注册与兑换子面板：开注（含名额）/ 积分兑换邀请码开关与配额。
 func regPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 	open := "❌ 关闭"
 	if registrationOpen(deps) {
 		open = "✅ 开启"
 	}
+	quota := "不限"
+	if q := openRegQuota(deps); q > 0 {
+		quota = fmt.Sprintf("%d（已用 %d，剩余 %d）", q, openRegUsed(deps), openRegRemaining(deps))
+	}
 	exch := "✅ 开启"
 	if !exchangeInviteEnabled(deps) {
 		exch = "❌ 关闭"
 	}
-	quota := "不限"
+	equota := "不限"
 	remaining := exchangeInviteRemaining(deps)
 	if q := exchangeInviteQuota(deps); q > 0 {
-		quota = fmt.Sprintf("%d（剩余 %d）", q, remaining)
+		equota = fmt.Sprintf("%d（剩余 %d）", q, remaining)
 	}
 	text := fmt.Sprintf(
 		"🔓 <b>注册与兑换</b>\n\n"+
 			"开注（免邀请码注册）：%s\n"+
+			"开注名额：%s\n"+
 			"积分兑换邀请码：%s\n"+
 			"兑换邀请码配额：%s\n\n"+
-			"（开注时新用户无需邀请码；配额指积分兑换邀请码的总量）",
-		open, exch, quota)
+			"（开注时新用户无需邀请码；设有名额时每注册成功 1 人扣 1 个，用完自动关闭）",
+		open, quota, exch, equota)
 	rows := [][]KeyboardButton{
 		{
 			{Text: "📢 开注：切换", Data: BuildCallbackData(DKAdmin, "reg:open")},
+			{Text: "🎯 设置开注名额", Data: BuildCallbackData(DKAdmin, "reg:regquota")},
 		},
 		{
 			{Text: "💱 兑换邀请码：切换", Data: BuildCallbackData(DKAdmin, "reg:exchange")},

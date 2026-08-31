@@ -89,6 +89,9 @@ func (r *Router) continueSession(ctx context.Context, msg *Message) bool {
 	case sessAdminQuota:
 		r.handleAdminQuotaStep(ctx, msg)
 		return true
+	case sessAdminRegQuota:
+		r.handleAdminRegQuotaStep(ctx, msg)
+		return true
 	case sessAdminDramaRej:
 		r.handleAdminDramaRejectStep(ctx, msg)
 		return true
@@ -134,7 +137,7 @@ var helpText = `
 🎟 使用续期码 — 输入续期码为自己的账号续期
 🎬 追剧中心 — 提交求剧工单（红果短剧分享链接）
 🔗 绑定已有账号 — 把已有 Jellyfin 账号关联到本 bot（用户名+密码）
-📝 注册新账号 — 用邀请码开通新 Jellyfin 账号（开注时免邀请码）
+📝 注册新账号 — 开通新 Jellyfin 账号（需邀请码；开注且有名额时免邀请码）
 ⚙️ 账号管理 — 改密/解绑（需安全码）/注销
 🔐 安全码 — 注册时设置；修改密码、解绑需校验
 🛠 管理面板 — 管理员统计与发卡（仅 /admin） 

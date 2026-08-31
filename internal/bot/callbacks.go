@@ -214,7 +214,7 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 			sendText(ctx, deps, cq.ChatID, "🗑 删除 Jellyfin 线路\n请输入线路 <b>编号</b>（/admin lines:list 查看）或完整 URL：\n\n回复 /cancel 可取消。")
 		}
 	case "reg":
-		// 实际回调 admin:reg:open / admin:reg:exchange / admin:reg:quota
+		// 实际回调 admin:reg:open / admin:reg:regquota / admin:reg:exchange / admin:reg:quota
 		switch {
 		case len(args) == 0:
 			sendAdminSub(ctx, deps, cq, "reg")
@@ -226,6 +226,12 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 			}
 			sendAdminSub(ctx, deps, cq, "reg")
 			_ = deps.Snd.AnswerCallback(ctx, cq.ID, msg, false)
+		case args[0] == "regquota":
+			deps.Sessions.Begin(cq.From.ID, sessAdminRegQuota)
+			sendText(ctx, deps, cq.ChatID,
+				"🎯 设置开注名额\n请输入本轮开注的注册名额（非负整数）：\n"+
+					"例如 <code>10</code> = 开注 10 个名额（自动开启开注，每注册 1 人扣 1 个，用完自动关闭）\n"+
+					"<code>0</code> = 不限名额（不改变开注状态）\n\n回复 /cancel 可取消。")
 		case args[0] == "exchange":
 			msg, err := toggleExchangeInvite(ctx, deps, cq.From.ID)
 			if err != nil {

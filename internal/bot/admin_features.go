@@ -487,6 +487,7 @@ func (r *Router) handleAdminQuotaStep(ctx context.Context, msg *Message) {
 }
 
 // toggleRegistrationOpen 切换开注状态，返回新状态文案。
+// 开启时：若设有名额且上一轮已用尽，自动清零开启新一轮；未用尽则沿用剩余名额。
 func toggleRegistrationOpen(ctx context.Context, deps *HandlerDeps, adminID int64) (string, error) {
 	now := "1"
 	if registrationOpen(deps) {
@@ -497,9 +498,59 @@ func toggleRegistrationOpen(ctx context.Context, deps *HandlerDeps, adminID int6
 	}
 	_ = db.WriteAudit(deps.DB, adminID, "admin_toggle_reg_open", "system_config", cfgKeyRegOpen, "开注="+now)
 	if now == "1" {
-		return "✅ 已开启开注：新用户注册免邀请码。", nil
+		if q := openRegQuota(deps); q > 0 {
+			if openRegRemaining(deps) <= 0 {
+				resetOpenRegRound(deps)
+				return fmt.Sprintf("✅ 已开启开注：新用户注册免邀请码。本轮名额 %d 个（新一轮，用完自动关闭）。", q), nil
+			}
+			return fmt.Sprintf("✅ 已开启开注：新用户注册免邀请码。本轮名额 %d 个（剩余 %d，用完自动关闭）。", q, openRegRemaining(deps)), nil
+		}
+		return "✅ 已开启开注：新用户注册免邀请码（名额不限）。", nil
 	}
 	return "❌ 已关闭开注：注册需邀请码。", nil
+}
+
+// handleAdminRegQuotaStep 设置开注名额向导（收非负整数）。
+// 输入 >0：设定名额并自动开启新一轮开注（每注册 1 人扣 1 个，用完自动关闭）；
+// 输入 0：名额不限（不改变当前开注状态）。
+func (r *Router) handleAdminRegQuotaStep(ctx context.Context, msg *Message) {
+	deps := r.deps
+	if !r.ensureAdmin(ctx, msg) {
+		deps.Sessions.Clear(msg.From.ID)
+		return
+	}
+	if isCancelText(msg.Text) {
+		deps.Sessions.Clear(msg.From.ID)
+		sendText(ctx, deps, msg.ChatID, "已取消设置开注名额。")
+		return
+	}
+	n := parseInt64Safe(msg.Text)
+	if n < 0 {
+		sendText(ctx, deps, msg.ChatID, "名额必须是非负整数（0=不限），请重新输入。")
+		return
+	}
+	deps.Sessions.Clear(msg.From.ID)
+	if err := configSet(deps, cfgKeyRegQuota, itoa64s(n)); err != nil {
+		sendText(ctx, deps, msg.ChatID, "保存名额失败："+err.Error())
+		return
+	}
+	_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_set_reg_quota", "system_config", cfgKeyRegQuota, "开注名额="+itoa64s(n))
+	if n > 0 {
+		resetOpenRegRound(deps)
+		if err := configSet(deps, cfgKeyRegOpen, "1"); err != nil {
+			sendText(ctx, deps, msg.ChatID, "开启开注失败："+err.Error())
+			return
+		}
+		_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_toggle_reg_open", "system_config", cfgKeyRegOpen, "开注=1（设置名额自动开启）")
+		sendText(ctx, deps, msg.ChatID,
+			fmt.Sprintf("✅ 已开启开注（免邀请码），本轮名额 %d 个。\n每注册成功 1 人扣 1 个，用完自动关闭并通知你。", n))
+		return
+	}
+	state := "❌ 关闭"
+	if registrationOpen(deps) {
+		state = "✅ 开启"
+	}
+	sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 已设置开注名额为不限。当前开注状态：%s。", state))
 }
 
 // toggleExchangeInvite 切换积分兑换邀请码开关，返回新状态文案。
