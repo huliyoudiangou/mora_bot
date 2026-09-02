@@ -36,9 +36,10 @@ type HandlerDeps struct {
 	DB           *gorm.DB
 	JF           *jellyfin.Client
 	JFServerBase string // 用于克隆策略时的默认模板用户 ID（demo 传 ""）
-	Sessions     *SessionStore
-	Lockers      *UserLocker
-	Snd          Sender
+	Sessions      *SessionStore
+	Lockers       *UserLocker
+	SessionLocks  *UserLocker // 与 Lockers 分离，专门串行化同一用户的会话/消息处理
+	Snd           Sender
 
 	// Pepper 卡密签名/加密主密钥（SECURITY_PEPPER）。为空时卡密功能禁用。
 	Pepper string
@@ -93,14 +94,21 @@ type CallbackQuery struct {
 }
 
 // UserLocker 按用户串行化（防并发双签/双扣）。
+// 每个条目带引用计数，GC 只清理没有被任何 goroutine 引用/等待的空闲锁，
+// 避免“旧请求仍持旧锁、新请求拿到新锁”导致同用户互斥失效。
+type lockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
 type UserLocker struct {
 	mu    sync.Mutex
-	locks map[int64]*sync.Mutex
+	locks map[int64]*lockEntry
 }
 
 // NewUserLocker 创建空锁表。
 func NewUserLocker() *UserLocker {
-	return &UserLocker{locks: make(map[int64]*sync.Mutex)}
+	return &UserLocker{locks: make(map[int64]*lockEntry)}
 }
 
 // WithUser 在用户锁内执行 fn。
@@ -110,30 +118,35 @@ func (l *UserLocker) WithUser(userID int64, fn func()) {
 		return
 	}
 	l.mu.Lock()
-	m, ok := l.locks[userID]
+	e, ok := l.locks[userID]
 	if !ok {
-		m = &sync.Mutex{}
-		l.locks[userID] = m
+		e = &lockEntry{}
+		l.locks[userID] = e
 	}
+	e.refs++
 	l.mu.Unlock()
-	m.Lock()
-	defer m.Unlock()
+
+	e.mu.Lock()
+	defer func() {
+		e.mu.Unlock()
+		l.mu.Lock()
+		e.refs--
+		l.mu.Unlock()
+	}()
 	fn()
 }
 
 // GC 清理长期未用的锁条目。
-// 注意：不能直接重建整个表，否则正在等待/持锁的 goroutine 会拿到旧锁指针，
-// 而后来的同用户请求拿到新锁，导致同用户并发互斥失效。
-func (l *UserLocker) GC(now time.Time) {
+// 仅在条目引用数为 0 且锁未被持有时删除；删除时不存在任何正在使用该锁的 goroutine。
+func (l *UserLocker) GC(_ time.Time) {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for id, m := range l.locks {
-		// 只在锁空闲时删除；使用 TryLock 判断是否有人持有或等待。
-		if m.TryLock() {
-			m.Unlock()
+	for id, e := range l.locks {
+		if e.refs == 0 && e.mu.TryLock() {
+			e.mu.Unlock()
 			delete(l.locks, id)
 		}
 	}

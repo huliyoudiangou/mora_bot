@@ -62,6 +62,20 @@ func (r *Router) handleMessage(ctx context.Context, m *models.Message) {
 	if text == "" {
 		return
 	}
+	// 用独立的 SessionLocks 串行化同一用户的消息/会话推进，避免多 worker 下
+	// 两个消息同时读写同一 Session 导致步骤错乱。Lockers 用于资金等业务互斥，
+	// 这里不能复用，否则会与内部 Lockers.WithUser 形成非重入死锁。
+	if r.deps.SessionLocks != nil {
+		r.deps.SessionLocks.WithUser(msg.From.ID, func() {
+			r.handleMessageInner(ctx, msg, text)
+		})
+		return
+	}
+	r.handleMessageInner(ctx, msg, text)
+}
+
+// handleMessageInner 实际处理一条文本/命令消息（调用方已持有 SessionLocks 时执行）。
+func (r *Router) handleMessageInner(ctx context.Context, msg *Message, text string) {
 	if strings.HasPrefix(text, "/") {
 		cmd, args := splitCmd(text)
 		r.dispatchCommand(ctx, cmd, args, msg)
@@ -103,6 +117,12 @@ func (r *Router) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
 		From:      from,
 		ChatID:    chatID,
 		MessageID: msgID,
+	}
+	if r.deps.SessionLocks != nil {
+		r.deps.SessionLocks.WithUser(from.ID, func() {
+			dispatchCallback(ctx, r.deps, local)
+		})
+		return
 	}
 	dispatchCallback(ctx, r.deps, local)
 }

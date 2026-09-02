@@ -324,6 +324,9 @@ func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot
 					continue
 				}
 				d := int(time.Until(*u.ExpireAt).Hours() / 24)
+				if d < 0 {
+					d = 0
+				}
 				msg := fmt.Sprintf("⏰ 你的 Jellyfin 账号将在 %d 天后到期（%s）。\n用果果币续期：/shop buy 后再 /redeem。", d, u.ExpireAt.Format("2006-01-02"))
 				_, _ = bot.SendMessage(ctx, &tgbotapi.SendMessageParams{ChatID: u.TelegramID, Text: msg})
 				sent[u.TelegramID] = today

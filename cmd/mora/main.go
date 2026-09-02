@@ -71,6 +71,7 @@ func main() {
 		JFServerBase:        cfg.JellyfinTemplateUserID,
 		Sessions:            bot.NewSessionStore(),
 		Lockers:             bot.NewUserLocker(),
+		SessionLocks:        bot.NewUserLocker(),
 		Pepper:              cfg.SecurityPepper,
 		RenewalPrice:        cfg.PriceRenewalCode,
 		RenewalDays:         cfg.DefaultRenewalDays,
