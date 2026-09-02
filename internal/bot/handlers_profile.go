@@ -31,6 +31,6 @@ func (r *Router) cmdProfile(ctx context.Context, msg *Message, args []string) {
 	default:
 		b += "订阅已到期，请使用 /shop 续期。\n"
 	}
-	b += fmt.Sprintf("连续签到：%d 天　账号状态：%s\n", u.SignStreak, u.Status)
+	b += fmt.Sprintf("连续签到：%d 天　账号状态：%s\n", u.SignStreak, escapeHTML(u.Status))
 	sendHTML(ctx, deps, msg.ChatID, b)
 }
