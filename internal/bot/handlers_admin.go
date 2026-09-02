@@ -242,6 +242,6 @@ func (r *Router) handleAdminUser(ctx context.Context, msg *Message, args []strin
 	}
 	isAdmin := deps.IsSuper != nil && deps.IsSuper(u.TelegramID)
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
-		"👤 tg=%d\n用户名：%s %s\nJF：%s\n果果币：%d\n状态：%s\n管理员：%v",
-		u.TelegramID, u.TgUsername, u.FirstName, u.JellyfinUserID, u.GuoGuo, u.Status, isAdmin))
+		"👤 tg=%d\n用户名：%s %s\nJF：%s（%s）\n果果币：%d\n状态：%s\n管理员：%v",
+		u.TelegramID, escapeHTML(u.TgUsername), escapeHTML(u.FirstName), escapeHTML(u.JellyfinUsername), escapeHTML(u.JellyfinUserID), u.GuoGuo, u.Status, isAdmin))
 }
