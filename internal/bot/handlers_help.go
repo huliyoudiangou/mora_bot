@@ -35,14 +35,3 @@ func releaseInviteCode(deps *HandlerDeps, inviteID uint, userID int64) {
 		Where("id = ? AND used_by = ? AND status = ?", inviteID, userID, db.CodeStatusUsed).
 		Updates(map[string]any{"used_by": nil, "used_at": nil, "status": db.CodeStatusUnused})
 }
-
-// markUsedInvite 保留兼容包装：直接标记为已使用（无原子校验，仅用于调用方已确认占用时）。
-func markUsedInvite(deps *HandlerDeps, inviteID uint, userID int64) {
-	if deps == nil || deps.DB == nil || inviteID == 0 {
-		return
-	}
-	usedBy := userID
-	deps.DB.Model(&db.InviteCode{}).
-		Where("id = ?", inviteID).
-		Updates(map[string]any{"used_by": usedBy, "used_at": time.Now(), "status": db.CodeStatusUsed})
-}
