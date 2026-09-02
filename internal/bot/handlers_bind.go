@@ -198,13 +198,15 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 	}
 	u, err := ensureUser(ctx, deps, msg.From)
 	if err != nil {
+		// 远程已创建但本地档案失败：回滚远程账号，避免孤儿 Jellyfin 用户。
+		_ = deps.JF.DeleteUser(ctx, ju.ID)
 		if slotTaken {
 			refundOpenRegSlot(deps)
 		}
 		if inviteClaimed {
 			releaseInviteCode(deps, inviteID, msg.From.ID)
 		}
-		sendText(ctx, deps, msg.ChatID, "本地更新失败，稍后再试。")
+		sendText(ctx, deps, msg.ChatID, "本地更新失败，已回滚刚创建的 Jellyfin 账号，请稍后再试。")
 		deps.Sessions.Clear(msg.From.ID)
 		return
 	}
@@ -215,13 +217,15 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 		"status":             db.UserStatusActive, // 重新注册后恢复活跃（曾注销的用户）
 		"security_code_hash": secHash,
 	}).Error; err != nil {
+		// 本地档案保存失败：回滚远程账号，避免本地未关联但远程已存在。
+		_ = deps.JF.DeleteUser(ctx, ju.ID)
 		if slotTaken {
 			refundOpenRegSlot(deps)
 		}
 		if inviteClaimed {
 			releaseInviteCode(deps, inviteID, msg.From.ID)
 		}
-		sendText(ctx, deps, msg.ChatID, "注册成功，但本地档案保存失败："+err.Error())
+		sendText(ctx, deps, msg.ChatID, "注册成功，但本地档案保存失败，已回滚刚创建的 Jellyfin 账号："+err.Error())
 		deps.Sessions.Clear(msg.From.ID)
 		return
 	}
