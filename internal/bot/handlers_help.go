@@ -27,12 +27,12 @@ func claimInviteCode(deps *HandlerDeps, inviteID uint, userID int64) bool {
 
 // releaseInviteCode 归还一张被临时占用的邀请码（仅当使用者是当前用户且状态为 used 时）。
 // 只清理使用标记与状态，不删除卡密。
-func releaseInviteCode(deps *HandlerDeps, inviteID uint) {
+func releaseInviteCode(deps *HandlerDeps, inviteID uint, userID int64) {
 	if deps == nil || deps.DB == nil || inviteID == 0 {
 		return
 	}
 	deps.DB.Model(&db.InviteCode{}).
-		Where("id = ?", inviteID).
+		Where("id = ? AND used_by = ? AND status = ?", inviteID, userID, db.CodeStatusUsed).
 		Updates(map[string]any{"used_by": nil, "used_at": nil, "status": db.CodeStatusUnused})
 }
 

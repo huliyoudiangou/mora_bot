@@ -177,7 +177,7 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 			refundOpenRegSlot(deps) // 创建失败，归还名额
 		}
 		if inviteClaimed {
-			releaseInviteCode(deps, inviteID)
+			releaseInviteCode(deps, inviteID, msg.From.ID)
 		}
 		sendText(ctx, deps, msg.ChatID, "创建 Jellyfin 用户失败："+err.Error())
 		deps.Sessions.Clear(msg.From.ID)
@@ -195,7 +195,7 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 			refundOpenRegSlot(deps)
 		}
 		if inviteClaimed {
-			releaseInviteCode(deps, inviteID)
+			releaseInviteCode(deps, inviteID, msg.From.ID)
 		}
 		sendText(ctx, deps, msg.ChatID, "本地更新失败，稍后再试。")
 		deps.Sessions.Clear(msg.From.ID)
@@ -212,7 +212,7 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 			refundOpenRegSlot(deps)
 		}
 		if inviteClaimed {
-			releaseInviteCode(deps, inviteID)
+			releaseInviteCode(deps, inviteID, msg.From.ID)
 		}
 		sendText(ctx, deps, msg.ChatID, "注册成功，但本地档案保存失败："+err.Error())
 		deps.Sessions.Clear(msg.From.ID)
