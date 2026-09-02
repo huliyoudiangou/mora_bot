@@ -24,7 +24,7 @@ func dbFindInviteCode(gdb *gorm.DB, code, pepper string) (*db.InviteCode, bool, 
 		return nil, false, err
 	}
 	var ic db.InviteCode
-	err = gdb.Where("code_hash = ? AND used_by IS NULL", hash).First(&ic).Error
+	err = gdb.Where("code_hash = ? AND status = ? AND used_by IS NULL", hash, db.CodeStatusUnused).First(&ic).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, false, nil
 	}
