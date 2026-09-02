@@ -309,7 +309,11 @@ func (r *Router) cmdAccountDelete(ctx context.Context, msg *Message, args []stri
 			"删除账号是不可逆操作。请发送 <code>/account delete CONFIRM</code>")
 		return
 	}
-	if deps.JF != nil && u.JellyfinUserID != "" {
+	if u.JellyfinUserID != "" {
+		if deps.JF == nil {
+			sendText(ctx, deps, msg.ChatID, "Jellyfin 服务未配置，无法删除远程账号；已取消注销。")
+			return
+		}
 		if err := deps.JF.DeleteUser(ctx, u.JellyfinUserID); err != nil {
 			sendText(ctx, deps, msg.ChatID, "删除 Jellyfin 用户失败，请联系管理员。")
 			return
