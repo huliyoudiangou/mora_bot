@@ -61,6 +61,10 @@ func (r *Router) cmdAccountPwd(ctx context.Context, msg *Message, _ []string) {
 		sendText(ctx, deps, msg.ChatID, "尚未绑定 Jellyfin 账号，无法修改密码。")
 		return
 	}
+	if deps.JF == nil {
+		sendText(ctx, deps, msg.ChatID, "Jellyfin 服务未配置，无法修改密码。")
+		return
+	}
 	if u.SecurityCodeHash == "" {
 		sendText(ctx, deps, msg.ChatID, "你还没有设置安全码。请先点「🔐 设置安全码」或发送 /account security 设置后，再修改密码。")
 		return
@@ -101,6 +105,11 @@ func (r *Router) handlePwdChangeStep(ctx context.Context, msg *Message) {
 		oldPw := strings.TrimSpace(msg.Text)
 		if oldPw == "" {
 			sendText(ctx, deps, msg.ChatID, "旧密码不能为空。")
+			return
+		}
+		if deps.JF == nil {
+			deps.Sessions.Clear(msg.From.ID)
+			sendText(ctx, deps, msg.ChatID, "Jellyfin 服务未配置，无法修改密码。")
 			return
 		}
 		res, err := deps.JF.AuthenticateByName(ctx, u.JellyfinUsername, oldPw)

@@ -262,6 +262,10 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 		return
 	}
 	uName, _ := sess.Data["username"].(string)
+	if deps.JF == nil {
+		sendText(ctx, deps, msg.ChatID, "Jellyfin 服务未配置，无法绑定。")
+		return
+	}
 	// 1. 用户侧自证（Jellyfin 官方认证接口）
 	res, err := deps.JF.AuthenticateByName(ctx, uName, pwd)
 	if err != nil {
