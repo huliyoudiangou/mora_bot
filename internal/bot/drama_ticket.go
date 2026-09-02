@@ -412,7 +412,7 @@ func displayTg(u *db.User) string {
 		n = fmt.Sprintf("tg_%d", u.TelegramID)
 	}
 	if u.TgUsername != "" {
-		return fmt.Sprintf("@%s（%s）", u.TgUsername, escapeHTML(n))
+		return fmt.Sprintf("@%s（%s）", escapeHTML(u.TgUsername), escapeHTML(n))
 	}
 	return fmt.Sprintf("<code>%d</code>（%s）", u.TelegramID, escapeHTML(n))
 }

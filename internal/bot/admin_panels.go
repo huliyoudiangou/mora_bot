@@ -411,7 +411,7 @@ func sendDramaTicketList(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 			who = "@" + it.TgUsername
 		}
 		b.WriteString(fmt.Sprintf("#%d《%s》\n　👤 %s · 🕐 %s",
-			it.ID, escapeHTML(it.Title), who,
+			it.ID, escapeHTML(it.Title), escapeHTML(who),
 			it.CreatedAt.In(db.ChinaLoc).Format("01-02 15:04")))
 		switch it.Status {
 		case db.DramaStatusClaimed:
