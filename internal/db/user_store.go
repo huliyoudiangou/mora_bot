@@ -90,15 +90,3 @@ func IsSuperAdmin(gdb *gorm.DB, telegramID int64) (bool, error) {
 	}
 	return false, nil
 }
-
-// FindUserByJellyfinID 按 Jellyfin User ID 查找本地绑定记录（用于防止同一 JF 账号被多个 TG 绑定）。
-func FindUserByJellyfinID(gdb *gorm.DB, jfID string) (*User, error) {
-	if gdb == nil {
-		return nil, ErrNilDB
-	}
-	var u User
-	if err := gdb.Where("jellyfin_user_id = ? AND jellyfin_user_id <> ''", jfID).First(&u).Error; err != nil {
-		return nil, err
-	}
-	return &u, nil
-}
