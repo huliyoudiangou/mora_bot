@@ -223,7 +223,7 @@ func (r *Router) handleAdminAddPoints(ctx context.Context, msg *Message, args []
 		sendText(ctx, deps, msg.ChatID, "调整失败："+err.Error())
 		return
 	}
-	_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_addpoints", "user", itoa(int(delta)), fmt.Sprintf("tg=%d 调整果果币 %d", tgID, delta))
+	_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_addpoints", "user", itoa64s(tgID), fmt.Sprintf("调整果果币 %d（delta=%d）", delta, delta))
 	sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 已为用户 tg=%d 调整 %d 果果币。", tgID, delta))
 }
 
