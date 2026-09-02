@@ -121,14 +121,18 @@ func (r *Router) handlePwdChangeStep(ctx context.Context, msg *Message) {
 		case jellyfin.AuthOK:
 			// 继续第 3 步
 		case jellyfin.AuthBlocked:
-			// 密码大概率是对的，是 Jellyfin 不肯建会话（多为在线设备数达上限）。
+			// 密码大概率是对的，是 Jellyfin 不肯建会话（多为在线设备数达上限或账号被停用）。
 			// 绝不能报"旧密码错误"——那会让用户以为自己密码丢了。
-			// 这里用户已过安全码校验且账号属于本人，可以放心引导去自助清理设备。
-			deps.Sessions.Clear(msg.From.ID)
+			// 用户已经通过安全码校验且本地绑定属于本人，因此这里不再卡死流程，
+			// 允许继续设置新密码；同时明确告知限制原因和后续处理方式。
+			s2 := deps.Sessions.Advance(msg.From.ID, map[string]any{"old_pw": oldPw})
+			s2.Step = 2
 			sendHTML(ctx, deps, msg.ChatID,
-				"⚠️ 无法校验旧密码：Jellyfin 拒绝了本次登录，<b>这不代表密码错误</b>。\n\n"+
-					"通常是<b>同时在线设备数已达上限</b>，也可能是账号被停用。\n"+
-					"请到「⚙️ 账号管理 → 📱 登录设备」清理设备后，重新发起修改密码。")
+				"⚠️ 旧密码暂时无法在线校验，<b>这不代表你记错了密码</b>。\n\n"+
+					"通常是<b>同时在线设备数已达上限</b>，也可能是账号被管理员停用。\n"+
+					"你已通过<b>安全码</b>验证，可以继续设置新密码。\n"+
+					"若修改后仍无法登录，请先到「⚙️ 账号管理 → 📱 登录设备」清理设备。\n\n"+
+					"🔑 第 3/3 步\n请输入你的<b>新密码</b>（至少 6 位）：\n\n回复 /cancel 可取消。")
 			return
 		default: // jellyfin.AuthBadCredentials
 			sendText(ctx, deps, msg.ChatID, "❌ 旧密码错误，请重新输入。")

@@ -414,14 +414,10 @@ func (c *Client) ResetPassword(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, "/Users/"+url.PathEscape(id)+"/Password", nil, body, nil)
 }
 
-// AdminSetPassword 管理员直接改密码（先 reset 再 set）。
-// 参考 r/jellyfin 与官方文档：不改密码的 reset+set 流程更稳。
+// AdminSetPassword 管理员直接改密码（单请求，原子设置新密码）。
+// 实测 Jellyfin 10.11.11 的 POST /Users/{id}/Password 仅需 NewPw 即可完成设置；
+// 不再先 Reset 再 Set，避免两步之间失败导致账号短暂变成“无密码”状态。
 func (c *Client) AdminSetPassword(ctx context.Context, id, newPw string) error {
-	// 1) 重置为 "无密码"
-	if err := c.ResetPassword(ctx, id); err != nil {
-		return fmt.Errorf("重置密码失败: %w", err)
-	}
-	// 2) 用 UpdateUserPassword（管理员身份，无旧密码）
 	body := map[string]any{
 		"NewPw":         newPw,
 		"ResetPassword": false,
