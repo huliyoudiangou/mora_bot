@@ -21,6 +21,7 @@ import (
 	"gorm.io/gorm"
 
 	"mora_bot/internal/bot"
+	"mora_bot/internal/config"
 	"mora_bot/internal/db"
 )
 
@@ -123,6 +124,25 @@ func toInlineKeyboard(rows [][]bot.KeyboardButton) *models.InlineKeyboardMarkup 
 
 // ------------------------ 启动通知 ------------------------
 
+// warnConfig 启动时对安全敏感的配置项给出告警（不阻断启动，便于先修复再重启）。
+func warnConfig(lg *slog.Logger, cfg *config.Config) {
+	if len(cfg.SecurityPepper) > 0 && len(cfg.SecurityPepper) < 32 {
+		lg.Warn("SECURITY_PEPPER 过短（建议 ≥32 字符随机串）：过短的密钥可被离线爆破，危及卡密与安全码哈希")
+	}
+	if cfg.SecurityPepper == "" {
+		lg.Warn("SECURITY_PEPPER 未配置：卡密生成/核销与安全码校验将不可用")
+	}
+	if cfg.BackupEncryptKey != "" && len(cfg.BackupEncryptKey) < 32 {
+		lg.Warn("BACKUP_ENCRYPT_KEY 过短（建议 ≥32 字符随机串）：加密备份可被离线爆破")
+	}
+	if len(cfg.SuperAdminTgIDs) == 0 {
+		lg.Warn("未配置 SUPER_ADMIN_TG_IDS：管理面板/工单通知/开注自动关闭通知均不可用")
+	}
+	if cfg.JellyfinURL != "" && cfg.JellyfinTemplateUserID == "" {
+		lg.Warn("未配置 JELLYFIN_TEMPLATE_USER_ID：新注册账号将使用 Jellyfin 默认权限而非模板策略")
+	}
+}
+
 // notifyAdminsOnStartup 进程启动后向管理员私聊发送启动通知（含日志）。
 func notifyAdminsOnStartup(ctx context.Context, lg *slog.Logger, bot *tgbotapi.Bot, adminIDs []int64, version string) {
 	if bot == nil || len(adminIDs) == 0 {
@@ -142,20 +162,16 @@ func notifyAdminsOnStartup(ctx context.Context, lg *slog.Logger, bot *tgbotapi.B
 // ------------------------ 数据库备份 ------------------------
 
 // backupDatabase 执行一次 SQLite 一致性备份：
-//  1. wal_checkpoint 合并 WAL；
-//  2. 复制主库文件到 data/backups/；
-//  3. 配置了 BACKUP_ENCRYPT_KEY 则加密为 .enc；
-//  4. 保留 BACKUP_KEEP_COUNT 份，删除更旧的；
-//  5. 配置了 BACKUP_GROUP_ID 则通过 Bot API 发送给目标群/频道。
+//  1. VACUUM INTO 生成原子一致性快照（替代 wal_checkpoint+ReadFile 组合——
+//     两者之间新落 WAL 的写入会从备份中丢失）；
+//  2. 配置了 BACKUP_ENCRYPT_KEY 则加密为 .enc；
+//  3. 保留 BACKUP_KEEP_COUNT 份，删除更旧的；
+//  4. 配置了 BACKUP_GROUP_ID 则通过 Bot API 发送给目标群/频道。
 //
 // 返回生成的备份文件名（未生成返回空串）。
-func backupDatabase(ctx context.Context, gdb *gorm.DB, bot *tgbotapi.Bot, dbPath, encKey string, keepCount int, groupID int64) (string, error) {
+func backupDatabase(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *tgbotapi.Bot, dbPath, encKey string, keepCount int, groupID int64) (string, error) {
 	if gdb == nil || dbPath == "" {
 		return "", nil
-	}
-	// 1) 合并 WAL，确保只复制一个文件就完整
-	if sqlDB, err := gdb.DB(); err == nil {
-		_, _ = sqlDB.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 	}
 
 	dir := filepath.Join(filepath.Dir(dbPath), "backups")
@@ -164,29 +180,45 @@ func backupDatabase(ctx context.Context, gdb *gorm.DB, bot *tgbotapi.Bot, dbPath
 	}
 	ts := time.Now().Format("2006-01-02-150405.000")
 	dst := filepath.Join(dir, ts+".db")
-	data, err := os.ReadFile(dbPath)
+	// VACUUM INTO 要求目标文件不存在；先写临时名，成功后改名/加密。
+	tmp := dst + ".tmp"
+	_ = os.Remove(tmp)
+	sqlDB, err := gdb.DB()
 	if err != nil {
+		return "", err
+	}
+	if _, err := sqlDB.Exec("VACUUM INTO ?", tmp); err != nil {
+		_ = os.Remove(tmp)
 		return "", err
 	}
 
 	if strings.TrimSpace(encKey) != "" {
 		// 加密备份
+		data, err := os.ReadFile(tmp)
+		if err != nil {
+			_ = os.Remove(tmp)
+			return "", err
+		}
 		enc, err := encryptBytes(data, encKey)
 		if err != nil {
+			_ = os.Remove(tmp)
 			return "", err
 		}
 		dst = dst + ".enc"
 		if err := os.WriteFile(dst, []byte("v1:"+base64.RawURLEncoding.EncodeToString(enc)), 0o600); err != nil {
+			_ = os.Remove(tmp)
 			return "", err
 		}
+		_ = os.Remove(tmp)
 	} else {
 		// 明文备份
-		if err := os.WriteFile(dst, data, 0o600); err != nil {
+		if err := os.Rename(tmp, dst); err != nil {
+			_ = os.Remove(tmp)
 			return "", err
 		}
 	}
 
-	// 2) 修剪旧的（按文件名时间戳排序，保留最新 keepCount 份）
+	// 修剪旧的（按文件名时间戳排序，保留最新 keepCount 份）
 	if keepCount > 0 {
 		entries, err := os.ReadDir(dir)
 		if err == nil {
@@ -210,16 +242,21 @@ func backupDatabase(ctx context.Context, gdb *gorm.DB, bot *tgbotapi.Bot, dbPath
 		}
 	}
 
-	// 3) 发送到群/频道（可选）
+	// 发送到群/频道（可选；失败记日志，不影响本地备份的有效性）
 	if bot != nil && groupID != 0 {
 		f, err := os.Open(dst)
-		if err == nil {
-			_, _ = bot.SendDocument(ctx, &tgbotapi.SendDocumentParams{
-				ChatID:  groupID,
-				Document: &models.InputFileUpload{Filename: filepath.Base(dst), Data: f},
-				Caption: "📦 mora_bot 数据库备份 " + ts,
-			})
-			_ = f.Close()
+		if err != nil {
+			lg.Warn("备份文件打开发送失败", "file", dst, "err", err)
+			return filepath.Base(dst), nil
+		}
+		_, serr := bot.SendDocument(ctx, &tgbotapi.SendDocumentParams{
+			ChatID:   groupID,
+			Document: &models.InputFileUpload{Filename: filepath.Base(dst), Data: f},
+			Caption:  "📦 mora_bot 数据库备份 " + ts,
+		})
+		_ = f.Close()
+		if serr != nil {
+			lg.Warn("备份推送群/频道失败", "file", dst, "err", serr)
 		}
 	}
 	return filepath.Base(dst), nil
@@ -251,7 +288,7 @@ func startDailyBackup(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *t
 				return
 			case <-time.After(time.Until(nextLocalHour(cfgBackupHour))):
 			}
-			name, err := backupDatabase(ctx, gdb, bot, dbPath, encKey, keepCount, groupID)
+			name, err := backupDatabase(ctx, lg, gdb, bot, dbPath, encKey, keepCount, groupID)
 			if err != nil {
 				lg.Error("自动备份失败", "err", err)
 			} else if name != "" {
@@ -334,7 +371,11 @@ func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot
 					d = 0
 				}
 				msg := fmt.Sprintf("⏰ 你的 Jellyfin 账号将在 %d 天后到期（%s）。\n用果果币续期：/shop buy 后再 /redeem。", d, u.ExpireAt.Format("2006-01-02"))
-				_, _ = bot.SendMessage(ctx, &tgbotapi.SendMessageParams{ChatID: u.TelegramID, Text: msg})
+				if _, err := bot.SendMessage(ctx, &tgbotapi.SendMessageParams{ChatID: u.TelegramID, Text: msg}); err != nil {
+					// 发送失败不记去重，明天同一用户会重试。
+					lg.Warn("到期提醒发送失败", "user", u.TelegramID, "err", err)
+					continue
+				}
 				sent[u.TelegramID] = today
 				lg.Info("已发送到期提醒", "user", u.TelegramID, "days_left", d)
 			}

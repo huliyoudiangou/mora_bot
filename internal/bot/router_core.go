@@ -100,8 +100,12 @@ func (r *Router) handleMessageInner(ctx context.Context, msg *Message, text stri
 }
 
 // handleCallback inline 回调。
+// 安全面板只在私聊里交互：面板消息被转发进群后按钮仍然有效，
+// 若不校验聊天类型，群成员点击会把点击者自己的设备列表/购买到的卡密明文等
+// 敏感输出直接刷进群聊。除 private 外的任何环境（含群/频道/无法确认的
+// 内联回调）一律拒绝。
 func (r *Router) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
-	if cq == nil || cq.From.ID == 0 {
+	if cq == nil || cq.From.ID == 0 || cq.Data == "" {
 		return
 	}
 	from := TGUser{
@@ -112,9 +116,22 @@ func (r *Router) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
 	}
 	var chatID int64
 	var msgID int
-	if cq.Message.Message != nil && cq.Message.Message.Chat.ID != 0 {
+	chatPrivate := false
+	switch {
+	case cq.Message.Message != nil:
 		chatID = cq.Message.Message.Chat.ID
 		msgID = cq.Message.Message.ID
+		chatPrivate = cq.Message.Message.Chat.Type == models.ChatTypePrivate
+	case cq.Message.InaccessibleMessage != nil:
+		chatID = cq.Message.InaccessibleMessage.Chat.ID
+		msgID = cq.Message.InaccessibleMessage.MessageID
+		chatPrivate = cq.Message.InaccessibleMessage.Chat.Type == models.ChatTypePrivate
+	}
+	if !chatPrivate || chatID == 0 {
+		if cq.ID != "" && r.deps != nil && r.deps.Snd != nil {
+			_ = r.deps.Snd.AnswerCallback(ctx, cq.ID, "请在与机器人的私聊中使用面板。", true)
+		}
+		return
 	}
 	local := &CallbackQuery{
 		ID:        cq.ID,

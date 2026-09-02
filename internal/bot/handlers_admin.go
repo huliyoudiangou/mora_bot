@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"strings"
 
+	"gorm.io/gorm"
+
+	"mora_bot/internal/codes"
 	"mora_bot/internal/db"
 )
 
@@ -97,35 +100,72 @@ func (r *Router) handleAdminGenCode(ctx context.Context, msg *Message, args []st
 	generateCodeBatchAndSend(ctx, r.deps, msg, kind, int(n), days)
 }
 
-// generateCodeBatchAndSend 建批次、逐张生成卡密并落库，然后分批发给管理员。
+// generateCodeBatchAndSend 建批次、批量生成卡密并落库，然后分批发给管理员。
+// 批次行与全部卡密行在同一个事务内写入：旧实现逐张落库，中途失败会留下
+// "已入库但明文从未投递"的孤儿卡密（占库存却无人知晓码面）。
 func generateCodeBatchAndSend(ctx context.Context, deps *HandlerDeps, msg *Message, kind string, count, days int) {
-	// 建批次
-	batch := db.CodeBatch{CodeType: kind, Count: count, Days: days, Note: "admin gencode", OperatorID: msg.From.ID}
-	if err := deps.DB.Create(&batch).Error; err != nil {
-		sendText(ctx, deps, msg.ChatID, "创建批次失败。")
+	if deps.Pepper == "" {
+		sendText(ctx, deps, msg.ChatID, "管理员未配置 SECURITY_PEPPER，卡密功能不可用。")
 		return
 	}
-	_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_gencode", "code_batch", itoa(int(batch.ID)), fmt.Sprintf("生成 %s %d 张，%d 天", kind, count, days))
-	// 生成卡密并落库
-	plains := make([]string, 0, count)
-	for i := 0; i < count; i++ {
-		var plain string
-		var err error
-		if kind == "renewal" {
-			plain, err = generateRenewalCode(deps, batch.ID, days, 0, "admin gencode")
-		} else {
-			plain, err = generateInviteCode(deps, batch.ID, "admin gencode")
-		}
-		if err != nil {
-			sendText(ctx, deps, msg.ChatID, "生成卡密失败（第 "+itoa(i+1)+" 张）："+err.Error())
-			return
-		}
-		plains = append(plains, plain)
-	}
-	// 发送：正文 <code> 展示 + 每张码一个点击复制按钮
-	title := "🎟 邀请码（批次 #" + itoa(int(batch.ID)) + "）\n"
+	secretKind := codes.CodeKindInvite
 	if kind == "renewal" {
-		title = "⏳ 续期码（批次 #" + itoa(int(batch.ID)) + "，" + itoa(days) + " 天）\n"
+		secretKind = codes.CodeKindRenewal
+	}
+	secrets, err := codes.GenerateCodeBatchInMemory(secretKind, count, deps.Pepper, days, "admin gencode")
+	if err != nil {
+		sendText(ctx, deps, msg.ChatID, "生成卡密失败："+err.Error())
+		return
+	}
+	var batchID uint
+	ve := deps.DB.Transaction(func(tx *gorm.DB) error {
+		batch := db.CodeBatch{CodeType: kind, Count: count, Days: days, Note: "admin gencode", OperatorID: msg.From.ID}
+		if err := tx.Create(&batch).Error; err != nil {
+			return err
+		}
+		batchID = batch.ID
+		for i := range secrets {
+			if kind == "renewal" {
+				rec := db.RenewalCode{
+					CodeHash:  secrets[i].Hash,
+					CodeEnc:   secrets[i].Enc,
+					Days:      days,
+					BatchID:   batch.ID,
+					Status:    db.CodeStatusUnused,
+					CreatedBy: msg.From.ID,
+				}
+				if err := tx.Create(&rec).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			rec := db.InviteCode{
+				CodeHash:  secrets[i].Hash,
+				CodeEnc:   secrets[i].Enc,
+				BatchID:   batch.ID,
+				Status:    db.CodeStatusUnused,
+				CreatedBy: msg.From.ID,
+			}
+			if err := tx.Create(&rec).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if ve != nil {
+		// 整批未落库，不会出现部分发放；明文 secrets 随作用域丢弃。
+		sendText(ctx, deps, msg.ChatID, "卡密落库失败，本批未发放，请稍后重试。")
+		return
+	}
+	_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_gencode", "code_batch", "batch:"+kind, fmt.Sprintf("生成 %s %d 张，%d 天", kind, count, days))
+	// 发送：正文 <code> 展示 + 每张码一个点击复制按钮
+	title := "🎟 邀请码（批次 #" + itoa(int(batchID)) + "）\n"
+	if kind == "renewal" {
+		title = "⏳ 续期码（批次 #" + itoa(int(batchID)) + "，" + itoa(days) + " 天）\n"
+	}
+	plains := make([]string, 0, len(secrets))
+	for i := range secrets {
+		plains = append(plains, secrets[i].Plain)
 	}
 	sendCodesWithCopy(ctx, deps, msg.ChatID, title, plains)
 }

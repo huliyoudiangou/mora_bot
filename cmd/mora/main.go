@@ -30,6 +30,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// 启动配置安全体检（仅告警，不阻断）
+	warnConfig(lg, cfg)
+
 	// -------- DB --------
 	gdb, err := db.Open(db.Options{
 		Path:          cfg.DatabaseURL,

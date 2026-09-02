@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"strings"
 	"sync"
@@ -94,7 +95,8 @@ func (r *Router) verifySecurityCode(ctx context.Context, deps *HandlerDeps, msg 
 		return false
 	}
 	hash, err := codes.HashSecurityCode(strings.TrimSpace(msg.Text), deps.Pepper)
-	if err != nil || hash != expectHash {
+	// 常数时间比较：避免逐字节短路比较对哈希串产生理论上的时序侧信道。
+	if err != nil || subtle.ConstantTimeCompare([]byte(hash), []byte(expectHash)) != 1 {
 		secGuard.fail(msg.From.ID)
 		sendText(ctx, deps, msg.ChatID, "❌ 安全码错误，请重新输入（或输入 /cancel 放弃）。")
 		return false

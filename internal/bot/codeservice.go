@@ -48,29 +48,6 @@ func sendCodesWithCopy(ctx context.Context, deps *HandlerDeps, chatID int64, tit
 	}
 }
 
-// generateInviteCode 生成并落库一张邀请码（核对 pepper 存在）。
-func generateInviteCode(deps *HandlerDeps, batchID uint, remark string) (string, error) {
-	if deps == nil || deps.Pepper == "" {
-		return "", errPepperMissing
-	}
-	batch, err := codes.GenerateCodeBatchInMemory(codes.CodeKindInvite, 1, deps.Pepper, 0, remark)
-	if err != nil {
-		return "", err
-	}
-	sc := batch[0]
-	rec := db.InviteCode{
-		CodeHash:  sc.Hash,
-		CodeEnc:   sc.Enc,
-		BatchID:   batchID,
-		Status:    db.CodeStatusUnused,
-		CreatedBy: 0,
-	}
-	if err := deps.DB.Create(&rec).Error; err != nil {
-		return "", err
-	}
-	return sc.Plain, nil
-}
-
 // generateRenewalSecret 纯生成（不落库）一张续期码密钥，供调用方在事务内自行落库。
 func generateRenewalSecret(pepper string, days int, owner int64, remark string) (*codes.CodeSecret, error) {
 	if pepper == "" {
@@ -96,33 +73,6 @@ func generateInviteSecret(pepper string, owner int64, remark string) (*codes.Cod
 		return nil, err
 	}
 	return &batch[0], nil
-}
-
-// generateRenewalCode 生成并落库一张续期码。
-func generateRenewalCode(deps *HandlerDeps, batchID uint, days int, owner int64, remark string) (string, error) {
-	if deps == nil || deps.Pepper == "" {
-		return "", errPepperMissing
-	}
-	if days <= 0 {
-		days = 30
-	}
-	batch, err := codes.GenerateCodeBatchInMemory(codes.CodeKindRenewal, 1, deps.Pepper, days, remark)
-	if err != nil {
-		return "", err
-	}
-	sc := batch[0]
-	rec := db.RenewalCode{
-		CodeHash:  sc.Hash,
-		CodeEnc:   sc.Enc,
-		Days:      days,
-		BatchID:   batchID,
-		Status:    db.CodeStatusUnused,
-		CreatedBy: owner,
-	}
-	if err := deps.DB.Create(&rec).Error; err != nil {
-		return "", err
-	}
-	return sc.Plain, nil
 }
 
 // redeemRenewalCode 用户核销续期码：把天数叠加到本地用户到期时间。
