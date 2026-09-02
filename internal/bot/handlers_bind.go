@@ -2,9 +2,12 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 
 	"mora_bot/internal/codes"
 	"mora_bot/internal/db"
@@ -306,6 +309,14 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 	ju, found, err := deps.JF.FindUserByName(ctx, uName)
 	if err != nil || !found {
 		sendText(ctx, deps, msg.ChatID, "未能在 Jellyfin 找到该账号，请稍后再试。")
+		return
+	}
+	// 防止同一 Jellyfin 账号被多个 Telegram 用户绑定。
+	if existing, err := db.FindUserByJellyfinID(deps.DB, ju.ID); err == nil && existing != nil && existing.TelegramID != msg.From.ID {
+		sendText(ctx, deps, msg.ChatID, "该 Jellyfin 账号已被其他 Telegram 用户绑定，如需使用请先由对方解绑。")
+		return
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		sendText(ctx, deps, msg.ChatID, "查询绑定关系失败："+err.Error())
 		return
 	}
 	u, err := ensureUser(ctx, deps, msg.From)
