@@ -42,9 +42,10 @@ const (
 	sessAdminDramaRej  = "admin_drama_rej"  // 求剧工单驳回：收理由（Data.req_id/msg_id）
 
 	// 账号安全会话
-	sessSetSecurity = "account_set_security"  // 设置/修改安全码：第 1 步收码 → 第 2 步确认
-	sessPwdChange   = "account_pwd_change"    // 修改密码：第 1 步安全码 → 第 2 步旧密码 → 第 3 步新密码
-	sessUnbind      = "account_unbind"        // 解绑：第 1 步安全码 → 第 2 步确认
+	sessSetSecurity = "account_set_security" // 设置/修改安全码：第 1 步收码 → 第 2 步确认
+	sessPwdChange   = "account_pwd_change"   // 修改密码：第 1 步安全码 → 第 2 步旧密码 → 第 3 步新密码
+	sessPwdReset    = "account_pwd_reset"    // 忘记密码重置：第 1 步安全码 → 第 2 步新密码
+	sessUnbind      = "account_unbind"       // 解绑：第 1 步安全码 → 第 2 步确认
 )
 
 // bindMu 串行化“检查 JF 是否已绑定 + 写入本地绑定”，防止并发下两个 TG 同时绑定同一 JF 账号。

@@ -10,6 +10,9 @@ import (
 	"mora_bot/internal/jellyfin"
 )
 
+// maxPasswordResetCount 每位用户可通过安全码重置密码的最大次数。
+const maxPasswordResetCount = 2
+
 // cmdAccount /account 自助面板欢迎。
 func (r *Router) cmdAccount(ctx context.Context, msg *Message, args []string) {
 	deps := r.deps
@@ -26,6 +29,8 @@ func (r *Router) cmdAccount(ctx context.Context, msg *Message, args []string) {
 	switch strings.ToLower(args[0]) {
 	case "pwd":
 		r.cmdAccountPwd(ctx, msg, args[1:])
+	case "reset":
+		r.cmdAccountPwdReset(ctx, msg, args[1:])
 	case "security":
 		r.cmdAccountSecurity(ctx, msg, args[1:])
 	case "unbind":
@@ -34,7 +39,7 @@ func (r *Router) cmdAccount(ctx context.Context, msg *Message, args []string) {
 	case "delete":
 		r.cmdAccountDelete(ctx, msg, args[1:])
 	default:
-		sendText(ctx, deps, msg.ChatID, "不认识的子命令：/account pwd|security|unbind|delete")
+		sendText(ctx, deps, msg.ChatID, "不认识的子命令：/account pwd|reset|security|unbind|delete")
 	}
 }
 
@@ -154,6 +159,92 @@ func (r *Router) handlePwdChangeStep(ctx context.Context, msg *Message) {
 		deps.Sessions.Clear(msg.From.ID)
 		_ = db.WriteAudit(deps.DB, msg.From.ID, "user_change_pwd", "user", itoa(int(u.TelegramID)), "修改密码(安全码校验)")
 		sendText(ctx, deps, msg.ChatID, "✅ 密码已更新。出于安全考虑，请重新登录 Jellyfin。")
+	}
+}
+
+// cmdAccountPwdReset 忘记密码重置：仅需安全码验证，不要求旧密码。
+// 每位用户最多可重置 2 次（PasswordResetCount 计数）。
+func (r *Router) cmdAccountPwdReset(ctx context.Context, msg *Message, _ []string) {
+	deps := r.deps
+	u, err := getLocal(ctx, deps, msg.From)
+	if err != nil {
+		sendText(ctx, deps, msg.ChatID, "查询失败，请稍后再试。")
+		return
+	}
+	if u.JellyfinUserID == "" {
+		sendText(ctx, deps, msg.ChatID, "尚未绑定 Jellyfin 账号，无法重置密码。")
+		return
+	}
+	if deps.JF == nil {
+		sendText(ctx, deps, msg.ChatID, "Jellyfin 服务未配置，无法重置密码。")
+		return
+	}
+	if u.SecurityCodeHash == "" {
+		sendText(ctx, deps, msg.ChatID, "你还没有设置安全码。请先点「🔐 设置安全码」或发送 /account security 设置后，再重置密码。")
+		return
+	}
+	if u.PasswordResetCount >= maxPasswordResetCount {
+		sendText(ctx, deps, msg.ChatID, "❌ 你的密码重置次数已达上限（2 次）。如需继续处理，请联系管理员。")
+		return
+	}
+	deps.Sessions.Begin(msg.From.ID, sessPwdReset)
+	left := maxPasswordResetCount - u.PasswordResetCount
+	sendHTML(ctx, deps, msg.ChatID,
+		fmt.Sprintf("🔑 <b>忘记密码重置</b> · 第 1/2 步\n\n请输入你的<b>安全码</b>：\n\n本功能不要求旧密码，重置后将直接设置新密码。\n剩余可重置次数：<b>%d</b> 次\n\n回复 /cancel 可取消。", left))
+}
+
+// handlePwdResetStep 忘记密码重置向导：安全码 → 新密码。
+func (r *Router) handlePwdResetStep(ctx context.Context, msg *Message) {
+	deps := r.deps
+	sess := deps.Sessions.Current(msg.From.ID)
+	if sess == nil {
+		return
+	}
+	if isCancelText(msg.Text) {
+		deps.Sessions.Clear(msg.From.ID)
+		sendText(ctx, deps, msg.ChatID, "已取消重置密码。")
+		return
+	}
+	u, err := getLocal(ctx, deps, msg.From)
+	if err != nil {
+		sendText(ctx, deps, msg.ChatID, "查询失败，请稍后再试。")
+		deps.Sessions.Clear(msg.From.ID)
+		return
+	}
+	switch sess.Step {
+	case 0: // 安全码
+		hash, err := codes.HashSecurityCode(strings.TrimSpace(msg.Text), deps.Pepper)
+		if err != nil || hash != u.SecurityCodeHash {
+			sendText(ctx, deps, msg.ChatID, "❌ 安全码错误，请重新输入（或输入 /cancel 放弃）。")
+			return
+		}
+		if u.PasswordResetCount >= maxPasswordResetCount {
+			deps.Sessions.Clear(msg.From.ID)
+			sendText(ctx, deps, msg.ChatID, "❌ 你的密码重置次数已达上限（2 次）。")
+			return
+		}
+		s2 := deps.Sessions.Advance(msg.From.ID, nil)
+		s2.Step = 1
+		sendHTML(ctx, deps, msg.ChatID, "🔑 第 2/2 步\n请输入你的<b>新密码</b>（至少 6 位）：\n\n回复 /cancel 可取消。")
+	case 1: // 新密码
+		newPw := strings.TrimSpace(msg.Text)
+		if len(newPw) < 6 {
+			sendText(ctx, deps, msg.ChatID, "新密码过短（至少 6 位），请重新输入。")
+			return
+		}
+		if err := deps.JF.AdminSetPassword(ctx, u.JellyfinUserID, newPw); err != nil {
+			sendText(ctx, deps, msg.ChatID, "重置密码失败："+err.Error())
+			return
+		}
+		newCount := u.PasswordResetCount + 1
+		if err := deps.DB.Model(u).Update("password_reset_count", newCount).Error; err != nil {
+			deps.Sessions.Clear(msg.From.ID)
+			sendText(ctx, deps, msg.ChatID, "✅ 密码已重置，但次数记录保存失败，请联系管理员。")
+			return
+		}
+		deps.Sessions.Clear(msg.From.ID)
+		_ = db.WriteAudit(deps.DB, msg.From.ID, "user_reset_pwd", "user", itoa(int(u.TelegramID)), "忘记密码重置(安全码校验)")
+		sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 密码已重置成功（第 %d/2 次）。请使用新密码重新登录 Jellyfin。", newCount))
 	}
 }
 

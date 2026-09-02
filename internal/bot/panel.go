@@ -87,8 +87,8 @@ func shopPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 func accountPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 	text := fmt.Sprintf(
 		"⚙️ <b>账号管理</b>\n\n"+
-			"绑定状态：%s\n账号识别：%s",
-		accountBindStatus(u), escapeHTML(u.DisplayName()))
+			"绑定状态：%s\n账号识别：%s\n密码重置：%d/2 次",
+		accountBindStatus(u), escapeHTML(u.DisplayName()), u.PasswordResetCount)
 	rows := [][]KeyboardButton{
 		{
 			{Text: "🔑 修改密码", Data: BuildCallbackData(DKAccount, "pwd")},
@@ -96,9 +96,10 @@ func accountPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 		},
 		{
 			{Text: "🔐 设置安全码", Data: BuildCallbackData(DKAccount, "security")},
-			{Text: "🗑 注销账号", Data: BuildCallbackData(DKAccount, "delete")},
+			{Text: "🔑 重置密码", Data: BuildCallbackData(DKAccount, "pwdreset")},
 		},
 		{
+			{Text: "🗑 注销账号", Data: BuildCallbackData(DKAccount, "delete")},
 			{Text: "📱 登录设备", Data: BuildCallbackData(DKAccount, "devices")},
 		},
 		{

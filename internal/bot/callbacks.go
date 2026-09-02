@@ -111,6 +111,9 @@ func handleAccountAction(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 	case "pwd":
 		// 修改密码向导：安全码 → 旧密码 → 新密码
 		(&Router{deps: deps}).cmdAccountPwd(ctx, m, nil)
+	case "pwdreset":
+		// 忘记密码重置：安全码 → 新密码（每用户最多 2 次）
+		(&Router{deps: deps}).cmdAccountPwdReset(ctx, m, nil)
 	case "unbind":
 		// 解绑必须走安全码向导；不提供可直接确认的回调，防止绕过身份校验。
 		(&Router{deps: deps}).cmdAccountUnbind(ctx, m)

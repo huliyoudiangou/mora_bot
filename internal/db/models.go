@@ -25,24 +25,25 @@ const (
 
 // User 本地用户档案。主键即 Telegram ID。
 type User struct {
-	TelegramID       int64  `gorm:"primaryKey"`
-	TgUsername       string `gorm:"size:64"`
-	FirstName        string `gorm:"size:64"`
-	LastName         string `gorm:"size:64"`
-	GuoGuo           int    `gorm:"default:0"` // 果果币余额
-	JellyfinUserID   string `gorm:"size:64;index"`
-	JellyfinUsername string `gorm:"size:128"`
-	BindType         string `gorm:"size:16"` // registered / existing
-	ExpireAt         *time.Time
-	IsPermanent      bool   `gorm:"default:false"` // 白名单/永久不过期
-	IsSuspended      bool   `gorm:"default:false"` // 封禁（含 Jellyfin 侧同步禁用）
-	SuspendReason    string `gorm:"size:256"`
-	Status           string `gorm:"size:16;default:active;index"`
-	LastSignAt       *time.Time
-	SignStreak       int    `gorm:"default:0"`
-	SecurityCodeHash string `gorm:"size:64"` // 安全码 HMAC（改密/解绑校验），空=未设置
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	TelegramID         int64  `gorm:"primaryKey"`
+	TgUsername         string `gorm:"size:64"`
+	FirstName          string `gorm:"size:64"`
+	LastName           string `gorm:"size:64"`
+	GuoGuo             int    `gorm:"default:0"` // 果果币余额
+	JellyfinUserID     string `gorm:"size:64;index"`
+	JellyfinUsername   string `gorm:"size:128"`
+	BindType           string `gorm:"size:16"` // registered / existing
+	ExpireAt           *time.Time
+	IsPermanent        bool   `gorm:"default:false"` // 白名单/永久不过期
+	IsSuspended        bool   `gorm:"default:false"` // 封禁（含 Jellyfin 侧同步禁用）
+	SuspendReason      string `gorm:"size:256"`
+	Status             string `gorm:"size:16;default:active;index"`
+	LastSignAt         *time.Time
+	SignStreak         int    `gorm:"default:0"`
+	SecurityCodeHash   string `gorm:"size:64"`   // 安全码 HMAC（改密/解绑校验），空=未设置
+	PasswordResetCount int    `gorm:"default:0"` // 已通过安全码重置 Jellyfin 密码的次数（上限 2）
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // DisplayName 用于消息展示的友好名称。
