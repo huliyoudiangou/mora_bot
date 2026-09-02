@@ -145,7 +145,7 @@ var helpText = `
 
 // ensureAdmin 判定管理员（tg_id 必须与 env 配置的 SUPER_ADMIN_TG_IDS/ADMIN_TELEGRAM_IDS 一致）。
 func (r *Router) ensureAdmin(ctx context.Context, msg *Message) bool {
-	if !r.deps.IsSuper(msg.From.ID) {
+	if r.deps == nil || r.deps.IsSuper == nil || !r.deps.IsSuper(msg.From.ID) {
 		sendText(ctx, r.deps, msg.ChatID, "您不是管理员，无法使用。")
 		return false
 	}

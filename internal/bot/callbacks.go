@@ -139,7 +139,7 @@ func handleAccountAction(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 
 // handleAdminCallback 管理面板动作。
 func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, action string, args []string) {
-	if !deps.IsSuper(cq.From.ID) {
+	if deps.IsSuper == nil || !deps.IsSuper(cq.From.ID) {
 		_ = deps.Snd.AnswerCallback(ctx, cq.ID, "您不是管理员，无法使用。", true)
 		return
 	}
@@ -283,7 +283,7 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 
 // sendAdminSub 发送管理面板子面板（白名单/定价/线路）。
 func sendAdminSub(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, which string) {
-	if !deps.IsSuper(cq.From.ID) {
+	if deps.IsSuper == nil || !deps.IsSuper(cq.From.ID) {
 		return
 	}
 	u, err := ensureUser(ctx, deps, cq.From)
@@ -313,7 +313,7 @@ func sendAdminSub(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, whi
 
 // handleAdminWLList 列出全部白名单用户。
 func handleAdminWLList(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery) {
-	if !deps.IsSuper(cq.From.ID) {
+	if deps.IsSuper == nil || !deps.IsSuper(cq.From.ID) {
 		return
 	}
 	var users []db.User
@@ -364,7 +364,7 @@ func handleDramaCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 		(&Router{deps: deps}).cmdListDrama(ctx, m)
 	case "claim", "resolve", "reject":
 		// 管理员处理动作：接单 / 完成 / 驳回
-		if !deps.IsSuper(cq.From.ID) {
+		if deps.IsSuper == nil || !deps.IsSuper(cq.From.ID) {
 			ack("无权限", true)
 			return
 		}
@@ -463,7 +463,7 @@ func messageIDOf(cq *CallbackQuery) int {
 // 即 ParseCallbackData 拆出 domain="admin", action="user", args=["disable","1001"]，
 // 这里把 action 与 args[0] 重组为子动作（user:disable / user:enable）。
 func handleAdminUserCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, action string, args []string) {
-	if !deps.IsSuper(cq.From.ID) {
+	if deps.IsSuper == nil || !deps.IsSuper(cq.From.ID) {
 		return
 	}
 	// 重组：admin:user:disable:1001 → subAction="user:disable", args=["1001"]
