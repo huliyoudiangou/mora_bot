@@ -69,6 +69,8 @@ func (s *SessionStore) Advance(userID int64, data map[string]any) *Session {
 		sess = &Session{Kind: "", Data: map[string]any{}, Expires: time.Now().Add(30 * time.Minute)}
 		s.m[userID] = sess
 	}
+	// 每次推进会话都刷新过期时间，避免用户在多步向导中稍作停留就过期。
+	sess.Expires = time.Now().Add(30 * time.Minute)
 	sess.Step++
 	for k, v := range data {
 		sess.Data[k] = v
