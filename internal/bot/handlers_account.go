@@ -46,7 +46,7 @@ func accountBindStatus(u *db.User) string {
 	if u.JellyfinUserID == "" {
 		return "未绑定 Jellyfin"
 	}
-	return fmt.Sprintf("已绑定 Jellyfin（%s）", u.JellyfinUserID)
+	return fmt.Sprintf("已绑定 Jellyfin（%s）", escapeHTML(u.JellyfinUserID))
 }
 
 // cmdAccountPwd 修改密码：开始安全码向导（安全码 → 旧密码 → 新密码）。
