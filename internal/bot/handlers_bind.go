@@ -8,6 +8,7 @@ import (
 
 	"mora_bot/internal/codes"
 	"mora_bot/internal/db"
+	"mora_bot/internal/jellyfin"
 )
 
 // Session kinds for multi-step flows.
@@ -149,9 +150,18 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 	pwd, _ := sess.Data["pwd"].(string)
 	// 开注模式（无邀请码）：先占用一个开注名额（设有名额时），防止超发
 	openMode := true
+	var inviteID uint
 	if id, ok := sess.Data["invite_id"].(uint); ok && id != 0 {
 		openMode = false
+		inviteID = id
 	}
+	// 邀请码必须原子占用后再创建远程账号，避免并发注册同一张码导致超发。
+	if inviteID != 0 && !claimInviteCode(deps, inviteID, msg.From.ID) {
+		deps.Sessions.Clear(msg.From.ID)
+		sendText(ctx, deps, msg.ChatID, "邀请码无效或已被使用，注册已取消。")
+		return
+	}
+	inviteClaimed := inviteID != 0
 	slotTaken := false
 	if openMode {
 		if !consumeOpenRegSlot(ctx, deps) {
@@ -166,6 +176,9 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 		if slotTaken {
 			refundOpenRegSlot(deps) // 创建失败，归还名额
 		}
+		if inviteClaimed {
+			releaseInviteCode(deps, inviteID)
+		}
 		sendText(ctx, deps, msg.ChatID, "创建 Jellyfin 用户失败："+err.Error())
 		deps.Sessions.Clear(msg.From.ID)
 		return
@@ -178,25 +191,27 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 	}
 	u, err := ensureUser(ctx, deps, msg.From)
 	if err != nil {
+		if slotTaken {
+			refundOpenRegSlot(deps)
+		}
+		if inviteClaimed {
+			releaseInviteCode(deps, inviteID)
+		}
 		sendText(ctx, deps, msg.ChatID, "本地更新失败，稍后再试。")
 		deps.Sessions.Clear(msg.From.ID)
 		return
 	}
 	_ = deps.DB.Model(u).Updates(map[string]any{
-		"jellyfin_user_id":  ju.ID,
-		"jellyfin_username": uName,
-		"bind_type":         db.BindTypeRegistered,
-		"status":            db.UserStatusActive, // 重新注册后恢复活跃（曾注销的用户）
+		"jellyfin_user_id":   ju.ID,
+		"jellyfin_username":  uName,
+		"bind_type":          db.BindTypeRegistered,
+		"status":             db.UserStatusActive, // 重新注册后恢复活跃（曾注销的用户）
 		"security_code_hash": secHash,
 	}).Error
 	// 新注册账号默认有效期（NEW_ACCOUNT_VALID_DAYS，0=永久）
 	if deps.NewAccountValidDays > 0 && u.ExpireAt == nil && !u.IsPermanent {
 		t := time.Now().AddDate(0, 0, deps.NewAccountValidDays)
 		_ = deps.DB.Model(u).Update("expire_at", t).Error
-	}
-	// 消耗邀请码（开注模式无 invite_id）
-	if id, ok := sess.Data["invite_id"].(uint); ok && id != 0 {
-		markUsedInvite(deps, id, u.TelegramID)
 	}
 	deps.Sessions.Clear(msg.From.ID)
 	sendText(ctx, deps, msg.ChatID, "✅ 注册成功，欢迎加入果果屋。")
@@ -248,12 +263,26 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 	}
 	uName, _ := sess.Data["username"].(string)
 	// 1. 用户侧自证（Jellyfin 官方认证接口）
-	ok, err := deps.JF.AuthenticateByName(ctx, uName, pwd)
+	res, err := deps.JF.AuthenticateByName(ctx, uName, pwd)
 	if err != nil {
 		sendText(ctx, deps, msg.ChatID, "验证失败："+err.Error())
 		return
 	}
-	if !ok {
+	switch res {
+	case jellyfin.AuthOK:
+		// 继续下面的关联流程
+	case jellyfin.AuthBlocked:
+		// 密码很可能是对的，只是 Jellyfin 拒绝建立会话。这里**不能**提供"一键清理设备"：
+		// 用户此刻尚未证明自己拥有该账号，给了入口就等于任何知道别人用户名的人
+		// 都能反复踢掉对方的在线设备。只说明原因，让用户自己去处置。
+		sendHTML(ctx, deps, msg.ChatID,
+			"⚠️ Jellyfin 拒绝了这次登录，<b>这不代表密码错误</b>。\n\n"+
+				"常见原因：\n"+
+				"· 该账号同时在线设备数已达上限 —— 请在任一 Jellyfin 客户端上退出一台设备后重试\n"+
+				"· 该账号已被管理员停用 —— 请联系管理员\n\n"+
+				"处理后再点「🔗 绑定已有账号」重试。")
+		return
+	default: // jellyfin.AuthBadCredentials
 		sendText(ctx, deps, msg.ChatID, "用户名或密码错误，绑定失败。")
 		return
 	}

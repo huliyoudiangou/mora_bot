@@ -99,6 +99,9 @@ func accountPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 			{Text: "🗑 注销账号", Data: BuildCallbackData(DKAccount, "delete")},
 		},
 		{
+			{Text: "📱 登录设备", Data: BuildCallbackData(DKAccount, "devices")},
+		},
+		{
 			{Text: "↩️ 返回主菜单", Data: BuildCallbackData(DKMenu, "home")},
 		},
 	}

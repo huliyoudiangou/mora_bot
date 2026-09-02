@@ -17,8 +17,9 @@ func dispatchCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery)
 	}
 	domain, action, args := ParseCallbackData(cq.Data)
 	// 立刻 ACK，避免 TG 客户端转圈。
-	// drama 域的处理分支各自应答一次（带结果文案），这里跳过，否则二次 ACK 会被 Telegram 拒绝、反馈丢失。
-	if DomainKind(domain) != DKDrama {
+	// drama 与 admin 域的处理分支各自应答一次（带权限/结果文案），这里跳过，
+	// 否则同一 callbackID 会被二次 ACK，Telegram 会拒绝且丢失反馈。
+	if DomainKind(domain) != DKDrama && DomainKind(domain) != DKAdmin {
 		_ = deps.Snd.AnswerCallback(ctx, cq.ID, "", false)
 	}
 
@@ -110,20 +111,28 @@ func handleAccountAction(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 		// 修改密码向导：安全码 → 旧密码 → 新密码
 		(&Router{deps: deps}).cmdAccountPwd(ctx, m, nil)
 	case "unbind":
-		// 解绑向导：安全码 → 确认
-		if len(args) > 0 && args[0] == "confirm" {
-			(&Router{deps: deps}).cmdAccountUnbindConfirmed(ctx, m)
-			return
-		}
+		// 解绑必须走安全码向导；不提供可直接确认的回调，防止绕过身份校验。
 		(&Router{deps: deps}).cmdAccountUnbind(ctx, m)
 	case "security":
 		(&Router{deps: deps}).cmdAccountSecurity(ctx, m, nil)
 	case "delete":
-		if len(args) > 0 && args[0] == "confirm" {
-			(&Router{deps: deps}).cmdAccountDelete(ctx, m, []string{"CONFIRM"})
-			return
-		}
+		// 注销是高风险不可逆操作：不提供跳过二次确认的快捷回调。
 		(&Router{deps: deps}).cmdAccountDelete(ctx, m, nil)
+	case "devices":
+		// 登录设备：列表 → 确认 → 执行。DKAccount 走 dispatchCallback 的全局 ACK，
+		// 这里不要再 AnswerCallback（同一 callbackID 二次应答会被 Telegram 拒绝）。
+		sub := ""
+		if len(args) > 0 {
+			sub = args[0]
+		}
+		switch sub {
+		case "clear":
+			cmdAccountDevicesConfirm(ctx, deps, cq)
+		case "clearok":
+			cmdAccountDevicesClear(ctx, deps, cq)
+		default:
+			cmdAccountDevices(ctx, deps, cq)
+		}
 	}
 }
 
@@ -133,6 +142,8 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 		_ = deps.Snd.AnswerCallback(ctx, cq.ID, "您不是管理员，无法使用。", true)
 		return
 	}
+	// 已授权：此处统一 ACK 一次；子分支不要再 AnswerCallback（避免重复应答）。
+	_ = deps.Snd.AnswerCallback(ctx, cq.ID, "", false)
 	m := &Message{From: cq.From, ChatID: cq.ChatID}
 	switch action {
 	case "view":
@@ -219,13 +230,11 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 		case len(args) == 0:
 			sendAdminSub(ctx, deps, cq, "reg")
 		case args[0] == "open":
-			msg, err := toggleRegistrationOpen(ctx, deps, cq.From.ID)
-			if err != nil {
-				_ = deps.Snd.AnswerCallback(ctx, cq.ID, "切换失败", true)
+			if _, err := toggleRegistrationOpen(ctx, deps, cq.From.ID); err != nil {
+				sendText(ctx, deps, cq.ChatID, "切换失败")
 				return
 			}
 			sendAdminSub(ctx, deps, cq, "reg")
-			_ = deps.Snd.AnswerCallback(ctx, cq.ID, msg, false)
 		case args[0] == "regquota":
 			deps.Sessions.Begin(cq.From.ID, sessAdminRegQuota)
 			sendText(ctx, deps, cq.ChatID,
@@ -233,13 +242,11 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 					"例如 <code>10</code> = 开注 10 个名额（自动开启开注，每注册 1 人扣 1 个，用完自动关闭）\n"+
 					"<code>0</code> = 不限名额（不改变开注状态）\n\n回复 /cancel 可取消。")
 		case args[0] == "exchange":
-			msg, err := toggleExchangeInvite(ctx, deps, cq.From.ID)
-			if err != nil {
-				_ = deps.Snd.AnswerCallback(ctx, cq.ID, "切换失败", true)
+			if _, err := toggleExchangeInvite(ctx, deps, cq.From.ID); err != nil {
+				sendText(ctx, deps, cq.ChatID, "切换失败")
 				return
 			}
 			sendAdminSub(ctx, deps, cq, "reg")
-			_ = deps.Snd.AnswerCallback(ctx, cq.ID, msg, false)
 		case args[0] == "quota":
 			deps.Sessions.Begin(cq.From.ID, sessAdminQuota)
 			sendText(ctx, deps, cq.ChatID, "🎟 设置积分兑换邀请码配额\n请输入允许兑换的邀请码<b>总数</b>（0=不限），例如：<code>10</code>\n\n回复 /cancel 可取消。")
@@ -266,7 +273,7 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 		}
 		var req db.DramaRequest
 		if err := deps.DB.First(&req, uint(id)).Error; err != nil {
-			_ = deps.Snd.AnswerCallback(ctx, cq.ID, "工单不存在", true)
+			sendText(ctx, deps, cq.ChatID, "工单不存在")
 			return
 		}
 		sendDramaTicketCard(ctx, deps, cq.ChatID, &req)
@@ -456,7 +463,6 @@ func messageIDOf(cq *CallbackQuery) int {
 // 这里把 action 与 args[0] 重组为子动作（user:disable / user:enable）。
 func handleAdminUserCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, action string, args []string) {
 	if !deps.IsSuper(cq.From.ID) {
-		_ = deps.Snd.AnswerCallback(ctx, cq.ID, "无权限", true)
 		return
 	}
 	// 重组：admin:user:disable:1001 → subAction="user:disable", args=["1001"]
@@ -470,23 +476,40 @@ func handleAdminUserCallback(ctx context.Context, deps *HandlerDeps, cq *Callbac
 	}
 	tgID := parseInt64Safe(args[0])
 	if tgID == 0 {
-		_ = deps.Snd.AnswerCallback(ctx, cq.ID, "参数错误", true)
 		return
 	}
 	var u db.User
 	if err := deps.DB.Where("telegram_id = ?", tgID).First(&u).Error; err != nil {
-		_ = deps.Snd.AnswerCallback(ctx, cq.ID, "未找到用户", true)
 		return
 	}
 	switch subAction {
 	case "user:enable":
-		deps.DB.Model(&u).Update("status", db.UserStatusActive)
-		_ = db.WriteAudit(deps.DB, cq.From.ID, "admin_user_enable", "user", itoa(int(u.TelegramID)), "启用用户")
+		if deps.JF != nil && u.JellyfinUserID != "" {
+			if err := deps.JF.SetUserDisabled(ctx, u.JellyfinUserID, false); err != nil {
+				sendText(ctx, deps, cq.ChatID, "启用 Jellyfin 账号失败："+err.Error())
+				return
+			}
+		}
+		deps.DB.Model(&u).Updates(map[string]any{
+			"status":         db.UserStatusActive,
+			"is_suspended":   false,
+			"suspend_reason": "",
+		})
+		_ = db.WriteAudit(deps.DB, cq.From.ID, "admin_user_enable", "user", itoa(int(u.TelegramID)), "启用用户（Jellyfin 同步）")
 	case "user:disable":
-		deps.DB.Model(&u).Update("status", db.UserStatusDisabled)
-		_ = db.WriteAudit(deps.DB, cq.From.ID, "admin_user_disable", "user", itoa(int(u.TelegramID)), "停用用户")
+		if deps.JF != nil && u.JellyfinUserID != "" {
+			if err := deps.JF.SetUserDisabled(ctx, u.JellyfinUserID, true); err != nil {
+				sendText(ctx, deps, cq.ChatID, "停用 Jellyfin 账号失败："+err.Error())
+				return
+			}
+		}
+		deps.DB.Model(&u).Updates(map[string]any{
+			"status":         db.UserStatusDisabled,
+			"is_suspended":   true,
+			"suspend_reason": "管理员停用",
+		})
+		_ = db.WriteAudit(deps.DB, cq.From.ID, "admin_user_disable", "user", itoa(int(u.TelegramID)), "停用用户（Jellyfin 同步）")
 	}
-	_ = deps.Snd.AnswerCallback(ctx, cq.ID, fmt.Sprintf("已处理用户 %d", tgID), false)
 }
 
 // parseInt64Safe 解析宽字符/digits int64；失败返回 0。

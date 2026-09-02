@@ -153,16 +153,6 @@ func redeemRenewalCode(deps *HandlerDeps, user *db.User, plainCode string) (int,
 	if days <= 0 {
 		days = 30
 	}
-	now := time.Now()
-	if user.IsPermanent {
-		// 白名单账号不再叠加，但消耗卡密。
-	} else if user.ExpireAt == nil || user.ExpireAt.Before(now) {
-		t := now.AddDate(0, 0, days)
-		newExpire = &t
-	} else {
-		t := user.ExpireAt.AddDate(0, 0, days)
-		newExpire = &t
-	}
 
 	err = deps.DB.Transaction(func(tx *gorm.DB) error {
 		// 幂等：仅当仍为 unused 才消费
@@ -179,9 +169,27 @@ func redeemRenewalCode(deps *HandlerDeps, user *db.User, plainCode string) (int,
 		if res.RowsAffected == 0 {
 			return codes.ErrCodeUsed
 		}
+
+		// 在事务内重新读取当前到期时间，避免并发核销两张码时都基于旧值计算
+		// 导致后一笔覆盖前一笔、白白损失续期天数。
+		var cur db.User
+		if err := tx.Select("telegram_id", "expire_at", "is_permanent").
+			Where("telegram_id = ?", user.TelegramID).First(&cur).Error; err != nil {
+			return err
+		}
+		now := time.Now()
+		if cur.IsPermanent {
+			// 白名单账号不再叠加，但消耗卡密。
+		} else if cur.ExpireAt == nil || cur.ExpireAt.Before(now) {
+			t := now.AddDate(0, 0, days)
+			newExpire = &t
+		} else {
+			t := cur.ExpireAt.AddDate(0, 0, days)
+			newExpire = &t
+		}
 		if newExpire != nil {
 			updates := map[string]any{"expire_at": *newExpire}
-			if user.IsPermanent {
+			if cur.IsPermanent {
 				updates["is_permanent"] = false
 			}
 			if err := tx.Model(&db.User{}).Where("telegram_id = ?", user.TelegramID).Updates(updates).Error; err != nil {
@@ -194,7 +202,7 @@ func redeemRenewalCode(deps *HandlerDeps, user *db.User, plainCode string) (int,
 			CodeID:     rec.ID,
 			CodeHash:   rec.CodeHash,
 			Days:       days,
-			PrevExpire: user.ExpireAt,
+			PrevExpire: cur.ExpireAt,
 			NewExpire:  newExpire,
 		}).Error
 	})

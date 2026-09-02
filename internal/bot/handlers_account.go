@@ -7,6 +7,7 @@ import (
 
 	"mora_bot/internal/codes"
 	"mora_bot/internal/db"
+	"mora_bot/internal/jellyfin"
 )
 
 // cmdAccount /account 自助面板欢迎。
@@ -28,12 +29,8 @@ func (r *Router) cmdAccount(ctx context.Context, msg *Message, args []string) {
 	case "security":
 		r.cmdAccountSecurity(ctx, msg, args[1:])
 	case "unbind":
-		// /account unbind 提示安全码；/account unbind CONFIRM 直接解绑（保留兼容）
-		if len(args) >= 2 && strings.EqualFold(args[1], "CONFIRM") {
-			r.cmdAccountUnbindConfirmed(ctx, msg)
-		} else {
-			r.cmdAccountUnbind(ctx, msg)
-		}
+		// /account unbind 始终走安全码向导，避免直接 CONFIRM 绕过身份校验
+		r.cmdAccountUnbind(ctx, msg)
 	case "delete":
 		r.cmdAccountDelete(ctx, msg, args[1:])
 	default:
@@ -106,12 +103,25 @@ func (r *Router) handlePwdChangeStep(ctx context.Context, msg *Message) {
 			sendText(ctx, deps, msg.ChatID, "旧密码不能为空。")
 			return
 		}
-		ok, err := deps.JF.AuthenticateByName(ctx, u.JellyfinUsername, oldPw)
+		res, err := deps.JF.AuthenticateByName(ctx, u.JellyfinUsername, oldPw)
 		if err != nil {
 			sendText(ctx, deps, msg.ChatID, "连接 Jellyfin 失败，请稍后再试。")
 			return
 		}
-		if !ok {
+		switch res {
+		case jellyfin.AuthOK:
+			// 继续第 3 步
+		case jellyfin.AuthBlocked:
+			// 密码大概率是对的，是 Jellyfin 不肯建会话（多为在线设备数达上限）。
+			// 绝不能报"旧密码错误"——那会让用户以为自己密码丢了。
+			// 这里用户已过安全码校验且账号属于本人，可以放心引导去自助清理设备。
+			deps.Sessions.Clear(msg.From.ID)
+			sendHTML(ctx, deps, msg.ChatID,
+				"⚠️ 无法校验旧密码：Jellyfin 拒绝了本次登录，<b>这不代表密码错误</b>。\n\n"+
+					"通常是<b>同时在线设备数已达上限</b>，也可能是账号被停用。\n"+
+					"请到「⚙️ 账号管理 → 📱 登录设备」清理设备后，重新发起修改密码。")
+			return
+		default: // jellyfin.AuthBadCredentials
 			sendText(ctx, deps, msg.ChatID, "❌ 旧密码错误，请重新输入。")
 			return
 		}
@@ -255,7 +265,8 @@ func (r *Router) handleUnbindStep(ctx context.Context, msg *Message) {
 	}
 }
 
-// cmdAccountUnbindConfirmed 真正执行解绑。
+// cmdAccountUnbindConfirmed 真正执行解绑：只断开本地关联，不删除 Jellyfin 账号。
+// 远程账号仍由用户自己保留，之后可随时重新绑定或继续在客户端使用。
 func (r *Router) cmdAccountUnbindConfirmed(ctx context.Context, msg *Message) {
 	deps := r.deps
 	u, err := getLocal(ctx, deps, msg.From)
@@ -265,17 +276,15 @@ func (r *Router) cmdAccountUnbindConfirmed(ctx context.Context, msg *Message) {
 	if u.JellyfinUserID == "" {
 		return
 	}
-	if deps.JF != nil {
-		if e := deps.JF.DeleteUser(ctx, u.JellyfinUserID); e != nil {
-			sendText(ctx, deps, msg.ChatID, "删除远程账号失败，联系管理员。")
-			return
-		}
-	}
-	_ = deps.DB.Model(u).Updates(map[string]any{
+	if err := deps.DB.Model(u).Updates(map[string]any{
 		"jellyfin_user_id":  "",
 		"jellyfin_username": "",
-	}).Error
-	sendText(ctx, deps, msg.ChatID, "✅ 已解除绑定。")
+		"bind_type":         "",
+	}).Error; err != nil {
+		sendText(ctx, deps, msg.ChatID, "解除绑定失败，请稍后再试。")
+		return
+	}
+	sendText(ctx, deps, msg.ChatID, "✅ 已解除绑定。Jellyfin 账号未被删除，之后可重新绑定。")
 }
 
 // cmdAccountDelete 删除账号（需 CONFIRM）。
@@ -311,4 +320,141 @@ func (r *Router) cmdAccountDelete(ctx context.Context, msg *Message, args []stri
 		return
 	}
 	sendText(ctx, deps, msg.ChatID, "✅ 账号已注销，感谢使用。")
+}
+
+// ---------------------------------------------------------------------------
+// 登录设备（自助清理在线会话）
+// ---------------------------------------------------------------------------
+//
+// Jellyfin 的 Policy.MaxActiveSessions 一旦占满，用户即使密码完全正确也会被拒登
+// （403）。用户自己在客户端上未必找得到"退出其它设备"的入口，所以这里给一个
+// 自助清理的兜底——这是用户从上限中恢复的唯一手段。
+
+// accountDevicesContext 取出渲染设备面板所需的一切；不可用时已向用户解释原因。
+// 返回 ok=false 表示调用方应直接返回。
+func accountDevicesContext(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery) (u *db.User, sessions []jellyfin.UserSession, maxSessions int, ok bool) {
+	u, err := ensureUser(ctx, deps, cq.From)
+	if err != nil {
+		sendText(ctx, deps, cq.ChatID, "查询失败，请稍后再试。")
+		return nil, nil, 0, false
+	}
+	if u.JellyfinUserID == "" {
+		sendText(ctx, deps, cq.ChatID, "尚未绑定 Jellyfin 账号，无法查看登录设备。")
+		return nil, nil, 0, false
+	}
+	if deps.JF == nil {
+		sendText(ctx, deps, cq.ChatID, "Jellyfin 服务暂不可用，请稍后再试。")
+		return nil, nil, 0, false
+	}
+	sessions, err = deps.JF.ListUserSessions(ctx, u.JellyfinUserID)
+	if err != nil {
+		sendText(ctx, deps, cq.ChatID, "读取登录设备失败，请稍后再试。")
+		return nil, nil, 0, false
+	}
+	// 上限读不到不算致命：列表本身仍有价值，按"不限"渲染即可。
+	maxSessions, _ = deps.JF.MaxActiveSessions(ctx, u.JellyfinUserID)
+	return u, sessions, maxSessions, true
+}
+
+// devicesText 渲染设备列表正文。
+func devicesText(sessions []jellyfin.UserSession, maxSessions int) string {
+	limit := "不限"
+	if maxSessions > 0 {
+		limit = fmt.Sprintf("%d 台", maxSessions)
+	}
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "📱 <b>登录设备</b>\n\n同时在线上限：%s\n当前在线：%d 台\n", limit, len(sessions))
+	if len(sessions) == 0 {
+		b.WriteString("\n当前没有在线设备。")
+		return b.String()
+	}
+	b.WriteString("\n")
+	for i, s := range sessions {
+		name := strings.TrimSpace(s.DeviceName)
+		if name == "" {
+			name = "未知设备"
+		}
+		line := escapeHTML(name)
+		if c := strings.TrimSpace(s.Client); c != "" {
+			line += " · " + escapeHTML(c)
+		}
+		fmt.Fprintf(b, "%d. %s\n", i+1, line)
+		if !s.LastActivity.IsZero() {
+			fmt.Fprintf(b, "   最后活动：%s\n", s.LastActivity.In(db.ChinaLoc).Format("01-02 15:04"))
+		}
+	}
+	if maxSessions > 0 && len(sessions) >= maxSessions {
+		b.WriteString("\n⚠️ 已达在线上限，新设备将无法登录（会提示密码错误之类的报错，其实是名额满了）。")
+	}
+	return b.String()
+}
+
+// cmdAccountDevices 展示当前在线设备列表。
+func cmdAccountDevices(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery) {
+	_, sessions, maxSessions, ok := accountDevicesContext(ctx, deps, cq)
+	if !ok {
+		return
+	}
+	rows := [][]KeyboardButton{}
+	if len(sessions) > 0 {
+		rows = append(rows, []KeyboardButton{
+			{Text: "🧹 清理全部设备", Data: BuildCallbackData(DKAccount, "devices", "clear")},
+		})
+	}
+	rows = append(rows,
+		[]KeyboardButton{
+			{Text: "🔄 刷新", Data: BuildCallbackData(DKAccount, "devices")},
+			{Text: "↩️ 返回账号管理", Data: BuildCallbackData(DKAccount, "view")},
+		},
+	)
+	sendPanel(ctx, deps, cq.ChatID, messageIDOf(cq), devicesText(sessions, maxSessions), rows)
+}
+
+// cmdAccountDevicesConfirm 二次确认。清理是可恢复操作（重新登录即可），
+// 所以不像解绑/注销那样要安全码，但仍要一次显式确认，避免误触把自己正在看的剧踢下线。
+func cmdAccountDevicesConfirm(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery) {
+	_, sessions, maxSessions, ok := accountDevicesContext(ctx, deps, cq)
+	if !ok {
+		return
+	}
+	if len(sessions) == 0 {
+		cmdAccountDevices(ctx, deps, cq)
+		return
+	}
+	text := devicesText(sessions, maxSessions) +
+		fmt.Sprintf("\n\n❓ 确认要清理全部 <b>%d</b> 台设备吗？\n清理后这些设备都需要重新登录（正在播放的会中断）。", len(sessions))
+	rows := [][]KeyboardButton{
+		{
+			{Text: "✅ 确认清理", Data: BuildCallbackData(DKAccount, "devices", "clearok")},
+			{Text: "❌ 取消", Data: BuildCallbackData(DKAccount, "devices")},
+		},
+	}
+	sendPanel(ctx, deps, cq.ChatID, messageIDOf(cq), text, rows)
+}
+
+// cmdAccountDevicesClear 真正执行清理，然后回到设备列表。
+func cmdAccountDevicesClear(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery) {
+	u, err := ensureUser(ctx, deps, cq.From)
+	if err != nil {
+		sendText(ctx, deps, cq.ChatID, "查询失败，请稍后再试。")
+		return
+	}
+	if u.JellyfinUserID == "" || deps.JF == nil {
+		sendText(ctx, deps, cq.ChatID, "当前无法清理登录设备，请稍后再试。")
+		return
+	}
+	n, err := deps.JF.LogoutAllDevices(ctx, u.JellyfinUserID)
+	if err != nil {
+		sendText(ctx, deps, cq.ChatID, "清理登录设备失败："+err.Error())
+		return
+	}
+	_ = db.WriteAudit(deps.DB, cq.From.ID, "user_logout_devices", "user",
+		itoa(int(u.TelegramID)), fmt.Sprintf("自助清理登录设备 %d 台", n))
+	if n == 0 {
+		sendText(ctx, deps, cq.ChatID, "当前没有可清理的在线设备。")
+	} else {
+		sendText(ctx, deps, cq.ChatID, fmt.Sprintf("✅ 已清理 %d 台登录设备，现在可以重新登录了。", n))
+	}
+	// 刷新面板，让用户直接看到结果。
+	cmdAccountDevices(ctx, deps, cq)
 }
