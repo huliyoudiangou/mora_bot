@@ -67,7 +67,7 @@ func filepathJoinData(p string) string {
 	}
 	dir := filepath.Dir(p)
 	if dir != "" && dir != "." {
-		_ = os.MkdirAll(dir, 0o755)
+		_ = os.MkdirAll(dir, 0o700)
 	}
 	return p
 }

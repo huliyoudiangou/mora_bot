@@ -168,7 +168,7 @@ func backupDatabase(ctx context.Context, gdb *gorm.DB, bot *tgbotapi.Bot, dbPath
 	}
 
 	dir := filepath.Join(filepath.Dir(dbPath), "backups")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	ts := time.Now().Format("2006-01-02-150405.000")
