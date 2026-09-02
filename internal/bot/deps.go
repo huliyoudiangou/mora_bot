@@ -23,7 +23,6 @@ type Sender interface {
 	SendText(ctx context.Context, chatID int64, text string) error
 	SendTextHTML(ctx context.Context, chatID int64, html string) error
 	AnswerCallback(ctx context.Context, callbackID, text string, alert bool) error
-	EditText(ctx context.Context, chatID int64, messageID int, text string) error
 	// SendKeyboard 发送带内联键盘的消息（面板）。
 	SendKeyboard(ctx context.Context, chatID int64, text string, rows [][]KeyboardButton) error
 	// EditKeyboard 原地更新消息文本与内联键盘（面板导航）。
@@ -56,8 +55,6 @@ type HandlerDeps struct {
 	SignStreakBonusCap int
 	// NewAccountValidDays 新注册账号默认有效天数（0=永久）。
 	NewAccountValidDays int
-	// NotifyBeforeDays 到期前多少天开始提醒（0=关闭）。
-	NotifyBeforeDays int
 	// DramaDailyLimit 每用户每天最多提交求剧数（0=不限）。
 	DramaDailyLimit int
 

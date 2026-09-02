@@ -28,8 +28,7 @@ type Config struct {
 	JellyfinAPIKey         string
 	JellyfinTemplateUserID string
 
-	Brand   string
-	Verbose bool
+	Brand string
 
 	// ---------- 经济 / 签到 ----------
 	// 每日签到基础果果币（SIGN_BASE_REWARD）
@@ -97,7 +96,6 @@ func Load() (*Config, error) {
 		JellyfinAPIKey:         env("JELLYFIN_API_KEY", ""),
 		JellyfinTemplateUserID: env("JELLYFIN_TEMPLATE_USER_ID", ""),
 		Brand:                  env("BRAND", "mora"),
-		Verbose:                envBool("VERBOSE", true),
 		SignBaseReward:         envInt("SIGN_BASE_REWARD", 5),
 		SignStreakBonus:        envInt("SIGN_STREAK_BONUS", 1),
 		SignStreakBonusCap:     envInt("SIGN_STREAK_BONUS_CAP", 0),

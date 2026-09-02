@@ -236,19 +236,3 @@ type JellyfinLine struct {
 	Order     int    `gorm:"default:0"`
 	CreatedAt time.Time
 }
-
-// AllModels 供 AutoMigrate。
-var AllModels = []interface{}{
-	&User{},
-	&PointTransaction{},
-	&SignInRecord{},
-	&CodeBatch{},
-	&InviteCode{},
-	&RenewalCode{},
-	&RenewalRecord{},
-	&DramaRequest{},
-	&DramaRequestLog{},
-	&AuditLog{},
-	&SystemConfig{},
-	&JellyfinLine{},
-}

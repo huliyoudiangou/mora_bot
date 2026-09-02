@@ -50,8 +50,9 @@ func (r *Router) handleAdminStats(ctx context.Context, msg *Message) {
 	deps.DB.Model(&db.User{}).Where("jellyfin_user_id <> ''").Count(&bound)
 	deps.DB.Model(&db.User{}).Where("guo_guo > 0").Count(&pointsUsers)
 	var inviteUnused, renewalUnused int64
-	deps.DB.Model(&db.InviteCode{}).Where("used_by IS NULL").Count(&inviteUnused)
-	deps.DB.Model(&db.RenewalCode{}).Where("used_by IS NULL").Count(&renewalUnused)
+	// 按 status 统计：revoked（已作废）的码 used_by 为空，但不应计入"未用"。
+	deps.DB.Model(&db.InviteCode{}).Where("status = ?", db.CodeStatusUnused).Count(&inviteUnused)
+	deps.DB.Model(&db.RenewalCode{}).Where("status = ?", db.CodeStatusUnused).Count(&renewalUnused)
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
 		"<b>全局统计</b>\n\n用户：%d（已绑定 %d / 有余额 %d）\n邀请码未用：%d\n续期码未用：%d",
 		total, bound, pointsUsers, inviteUnused, renewalUnused))

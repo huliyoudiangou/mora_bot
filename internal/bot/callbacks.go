@@ -332,9 +332,18 @@ func handleAdminWLList(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery
 		sendText(ctx, deps, cq.ChatID, "当前暂无白名单用户。")
 		return
 	}
+	// 截断展示，避免白名单很多时消息超过 Telegram 4096 上限被整条拒发。
+	const maxShow = 50
 	var b strings.Builder
-	b.WriteString("✅ <b>白名单用户</b>\n\n")
-	for _, u := range users {
+	b.WriteString("✅ <b>白名单用户</b>")
+	if len(users) > maxShow {
+		b.WriteString(fmt.Sprintf("（共 %d 人，仅显示前 %d）", len(users), maxShow))
+	}
+	b.WriteString("\n\n")
+	for i, u := range users {
+		if i >= maxShow {
+			break
+		}
 		line := fmt.Sprintf("• %s（tg=%d）", escapeHTML(u.DisplayName()), u.TelegramID)
 		if u.JellyfinUsername != "" {
 			line += " · JF:" + escapeHTML(u.JellyfinUsername)

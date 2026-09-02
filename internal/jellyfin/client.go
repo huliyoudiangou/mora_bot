@@ -236,20 +236,6 @@ func (c *Client) SetUserDisabled(ctx context.Context, id string, disabled bool) 
 	return c.UpdateUserPolicy(ctx, id, p)
 }
 
-// SetUserHidden 单独翻 IsHidden。
-func (c *Client) SetUserHidden(ctx context.Context, id string, hidden bool) error {
-	u, ok, err := c.GetUser(ctx, id)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("Jellyfin 用户不存在 id=%s", id)
-	}
-	p := u.Policy
-	p.IsHidden = hidden
-	return c.UpdateUserPolicy(ctx, id, p)
-}
-
 // ---------------------------------------------------------------------------
 // 会话 / 设备
 // ---------------------------------------------------------------------------

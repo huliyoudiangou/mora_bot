@@ -85,14 +85,22 @@ func dramaDailyLimitOK(ctx context.Context, deps *HandlerDeps, userID int64) boo
 	if deps == nil || deps.DB == nil || deps.DramaDailyLimit <= 0 {
 		return true
 	}
-	from := time.Now().In(db.ChinaLoc).Format("2006-01-02 00:00:00")
 	var cnt int64
 	deps.DB.Model(&db.DramaRequest{}).
-		Where("user_id = ? AND created_at >= ?", userID, from).
+		Where("user_id = ? AND created_at >= ?", userID, chinaDayStartLocal()).
 		Count(&cnt)
 	if cnt >= int64(deps.DramaDailyLimit) {
 		sendText(ctx, deps, userID, fmt.Sprintf("今天求剧已达上限（%d 条/天），明天再来吧。", deps.DramaDailyLimit))
 		return false
 	}
 	return true
+}
+
+// chinaDayStartLocal 返回东八区"今天零点"对应的**本机时区**时刻。
+// SQLite 里时间以本机偏移文本存储；这里必须转回本机时区再落参，
+// 否则（容器默认 UTC 时）窗口会错位 8 小时：中国 0-8 点的提交不被计数，
+// 每日上限可在该时段被多刷。
+func chinaDayStartLocal() time.Time {
+	n := time.Now().In(db.ChinaLoc)
+	return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, db.ChinaLoc).In(time.Now().Location())
 }

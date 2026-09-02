@@ -38,14 +38,12 @@ var (
 
 // CodeSecret 单个卡密的密文+哈希。永远不要把 CodePlain 打到日志。
 type CodeSecret struct {
-	Plain     string `json:"p,omitempty"` // 生成时暂时存在，处理完后立即置空
-	Hash      string `json:"h"`           // hex(HMAC-SHA256)
-	Enc       string `json:"e"`           // base64url(nonce|ciphertext)
-	Kind      string `json:"k"`
-	BatchID   uint   `json:"b"`
-	Days      int    `json:"d"`
-	Remark    string `json:"r"`
-	ExpiresAt int64  `json:"ea"`
+	Plain  string `json:"p,omitempty"` // 生成时暂时存在，处理完后立即置空
+	Hash   string `json:"h"`           // hex(HMAC-SHA256)
+	Enc    string `json:"e"`           // base64url(nonce|ciphertext)
+	Kind   string `json:"k"`
+	Days   int    `json:"d"`
+	Remark string `json:"r"`
 }
 
 // GenerateCodeBatchInMemory 生成一批留库的卡密。明文只在本函数返回期间存在。
@@ -59,8 +57,14 @@ func GenerateCodeBatchInMemory(kind string, count int, pepper string, renewDays 
 	if kind != CodeKindInvite && kind != CodeKindRenewal {
 		return nil, fmt.Errorf("kind 不合法")
 	}
-	if kind == CodeKindRenewal && renewDays <= 0 {
-		return nil, fmt.Errorf("renewDays 必须大于 0")
+	if kind == CodeKindRenewal {
+		if renewDays <= 0 {
+			return nil, fmt.Errorf("renewDays 必须大于 0")
+		}
+		// 与管理面板向导（1-3650）保持一致，堵住命令路径传入超大天数。
+		if renewDays > 3650 {
+			return nil, fmt.Errorf("renewDays 最多 3650 天")
+		}
 	}
 	out := make([]CodeSecret, count)
 	for i := 0; i < count; i++ {

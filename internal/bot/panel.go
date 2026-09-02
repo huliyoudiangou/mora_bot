@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"mora_bot/internal/db"
 )
@@ -178,10 +177,9 @@ func dramaRemaining(deps *HandlerDeps, userID int64) int {
 	if deps == nil || deps.DB == nil || deps.DramaDailyLimit <= 0 {
 		return -1
 	}
-	from := time.Now().In(db.ChinaLoc).Format("2006-01-02 00:00:00")
 	var cnt int64
 	deps.DB.Model(&db.DramaRequest{}).
-		Where("user_id = ? AND created_at >= ?", userID, from).
+		Where("user_id = ? AND created_at >= ?", userID, chinaDayStartLocal()).
 		Count(&cnt)
 	left := deps.DramaDailyLimit - int(cnt)
 	if left < 0 {

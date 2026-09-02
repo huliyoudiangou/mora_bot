@@ -82,7 +82,6 @@ func main() {
 		SignStreakBonus:     cfg.SignStreakBonus,
 		SignStreakBonusCap:  cfg.SignStreakBonusCap,
 		NewAccountValidDays: cfg.NewAccountValidDays,
-		NotifyBeforeDays:    cfg.NotifyBeforeDays,
 		DramaDailyLimit:     cfg.DramaDailyLimit,
 		IsSuper: func(tgID int64) bool {
 			return superSet[tgID]
@@ -93,6 +92,9 @@ func main() {
 	tg, err := tgbotapi.New(cfg.TgBotToken,
 		tgbotapi.WithWorkers(cfg.WorkerCount),
 		tgbotapi.WithUpdatesChannelCap(cfg.QueueCapacity),
+		// 只订阅用得到的更新类型：编辑消息/频道帖子等不再进入处理管线，
+		// 降低无谓流量与意外触发面。
+		tgbotapi.WithAllowedUpdates(tgbotapi.AllowedUpdates{"message", "callback_query"}),
 	)
 	if err != nil {
 		lg.Error("TG bot 创建失败", "err", err)

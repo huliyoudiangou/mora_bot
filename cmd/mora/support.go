@@ -65,16 +65,6 @@ func (s *tgSender) AnswerCallback(ctx context.Context, id, text string, alert bo
 	return err
 }
 
-// EditText 编辑消息。
-func (s *tgSender) EditText(ctx context.Context, chatID int64, messageID int, text string) error {
-	_, err := s.bot.EditMessageText(ctx, &tgbotapi.EditMessageTextParams{
-		ChatID:    chatID,
-		MessageID: messageID,
-		Text:      text,
-	})
-	return err
-}
-
 // SendKeyboard 发送带内联键盘的消息。
 func (s *tgSender) SendKeyboard(ctx context.Context, chatID int64, text string, rows [][]bot.KeyboardButton) error {
 	_, err := s.bot.SendMessage(ctx, &tgbotapi.SendMessageParams{
