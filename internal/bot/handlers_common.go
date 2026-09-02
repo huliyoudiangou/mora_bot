@@ -13,7 +13,7 @@ func getLocal(ctx context.Context, deps *HandlerDeps, from TGUser) (*db.User, er
 
 // ensureUser 找到用户，若无则 GetOrCreateUser；最后同步活跃时间。
 func ensureUser(_ context.Context, deps *HandlerDeps, from TGUser) (*db.User, error) {
-	if deps.DB == nil {
+	if deps == nil || deps.DB == nil {
 		return nil, db.ErrNilDB
 	}
 	u, err := db.GetOrCreateUser(deps.DB, from.ID, from.Username, from.FirstName, from.LastName)
