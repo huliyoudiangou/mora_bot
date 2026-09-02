@@ -219,7 +219,7 @@ func (r *Router) handleAdminAddPoints(ctx context.Context, msg *Message, args []
 		sendText(ctx, deps, msg.ChatID, "未找到该用户。")
 		return
 	}
-	if err := db.AddPoints(deps.DB, u.TelegramID, int(delta), "admin_adjust", "AdminCmd", 0); err != nil {
+	if err := db.AddPoints(deps.DB, u.TelegramID, int(delta), "admin_adjust", "AdminCmd", msg.From.ID); err != nil {
 		sendText(ctx, deps, msg.ChatID, "调整失败："+err.Error())
 		return
 	}

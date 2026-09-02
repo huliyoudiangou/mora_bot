@@ -102,12 +102,24 @@ func (r *Router) cmdShopBuy(ctx context.Context, msg *Message) {
 		})
 	})
 	if ve != nil {
-		sendText(ctx, deps, msg.ChatID, "交易失败："+ve.Error())
+		sendShopTxError(ctx, deps, msg.ChatID, ve)
 		return
 	}
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
 		"✅ 已扣除 %d 果果币，成功购买续期码（%d 天）：\n<code>%s</code>\n\n点击卡密即可复制；发送 /redeem %s 即可核销续期。",
 		price, days, plain, plain))
+}
+
+// sendShopTxError 商店交易失败的用户提示：业务错误给具体原因，其余一律脱敏。
+func sendShopTxError(ctx context.Context, deps *HandlerDeps, chatID int64, err error) {
+	switch {
+	case errors.Is(err, db.ErrInsufficientPoints):
+		sendText(ctx, deps, chatID, "果果币不足，先去 /signin 签到攒一波。")
+	case errors.Is(err, db.ErrOptimisticLock):
+		sendText(ctx, deps, chatID, "系统繁忙，请稍后再试。")
+	default:
+		sendText(ctx, deps, chatID, "交易失败，请稍后再试。")
+	}
 }
 
 // cmdShopBuyInvite /shop invite：扣果果币 -> 生成一张邀请码落库。
@@ -184,11 +196,11 @@ func (r *Router) cmdShopBuyInvite(ctx context.Context, msg *Message) {
 		})
 	})
 	if ve != nil {
-		if ve == errQuotaExceeded {
+		if errors.Is(ve, errQuotaExceeded) {
 			sendText(ctx, deps, msg.ChatID, "积分兑换邀请码名额已满（管理员设置了配额）。")
 			return
 		}
-		sendText(ctx, deps, msg.ChatID, "交易失败："+ve.Error())
+		sendShopTxError(ctx, deps, msg.ChatID, ve)
 		return
 	}
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(

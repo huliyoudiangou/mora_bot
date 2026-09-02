@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"strconv"
-	"strings"
 )
 
 // GetOrCreateUser 按 telegram_id 查或建用户档案。
@@ -70,23 +68,4 @@ func GetOrCreateUser(gdb *gorm.DB, telegramID int64, username, firstName, lastNa
 // TouchUserActive 更新最近活跃锚点（用 UpdatedAt 近似）。
 func TouchUserActive(gdb *gorm.DB, telegramID int64) {
 	gdb.Model(&User{}).Where("telegram_id = ?", telegramID).Update("updated_at", time.Now())
-}
-
-// IsSuperAdmin 依 system_configs.key='super_admins'（逗号分隔） 检查。
-func IsSuperAdmin(gdb *gorm.DB, telegramID int64) (bool, error) {
-	var c SystemConfig
-	err := gdb.Where("`key` = 'super_admins'").First(&c).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	target := strconv.FormatInt(telegramID, 10)
-	for _, v := range strings.Split(c.Value, ",") {
-		if strings.TrimSpace(v) == target {
-			return true, nil
-		}
-	}
-	return false, nil
 }

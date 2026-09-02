@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -43,13 +44,40 @@ func New(baseURL, apiKey string) (*Client, error) {
 	}, nil
 }
 
-// apiError 把 HTTP 非 2xx 转成可 errorf 的错。
-func (c *Client) apiError(resp *http.Response, body []byte) error {
-	snippet := strings.TrimSpace(string(body))
+// APIError 结构化的 Jellyfin 非 2xx 错误：调用方可按状态码区分提示，
+// 同时避免把原始响应体（可能含内部路径/片段）直接透给最终用户。
+type APIError struct {
+	Method string
+	Path   string
+	Status int
+	Body   string
+}
+
+func (e *APIError) Error() string {
+	snippet := strings.TrimSpace(e.Body)
 	if len(snippet) > 160 {
 		snippet = snippet[:160] + "..."
 	}
-	return fmt.Errorf("Jellyfin %s %d: %s", resp.Request.Method+" "+resp.Request.URL.Path, resp.StatusCode, snippet)
+	return fmt.Sprintf("Jellyfin %s %d: %s", e.Method+" "+e.Path, e.Status, snippet)
+}
+
+// StatusCode 返回 HTTP 状态码（非 APIError 时返回 0）。
+func StatusCode(err error) int {
+	var ae *APIError
+	if errors.As(err, &ae) {
+		return ae.Status
+	}
+	return 0
+}
+
+// apiError 把 HTTP 非 2xx 转成结构化错误。
+func (c *Client) apiError(resp *http.Response, body []byte) error {
+	return &APIError{
+		Method: resp.Request.Method + " " + resp.Request.URL.Path,
+		Path:   resp.Request.URL.Path,
+		Status: resp.StatusCode,
+		Body:   strings.TrimSpace(string(body)),
+	}
 }
 
 // do 发起一次管理请求。out 传 nil 表示不解析响应体。
@@ -166,12 +194,6 @@ func (c *Client) FindUserByName(ctx context.Context, name string) (*UserDTO, boo
 		}
 	}
 	return nil, false, nil
-}
-
-// UserExists 快速判断用户名是否已被占用（独立于 CreateUser，用于前端即时提示）。
-func (c *Client) UserExists(ctx context.Context, name string) (bool, error) {
-	_, ok, err := c.FindUserByName(ctx, name)
-	return ok, err
 }
 
 // CreateUser 调官方 API：POST /Users/New {Name, Password}
@@ -404,14 +426,6 @@ func (c *Client) releaseProbeSession(ctx context.Context, token, deviceID string
 		_ = c.DeleteDevice(releaseCtx, deviceID)
 	}
 	_ = ctx // 保留原 ctx 参数签名兼容；释放动作不依赖调用方生命周期。
-}
-
-// ResetPassword 调官方 API：POST /Users/{id}/Password（body ResetPassword=true）。
-// 旧版 /Users/{id}/Password/Reset 在 Jellyfin 10.10+ 已移除（会返回 404），
-// 10.11.11 实测：POST /Users/{id}/Password {"ResetPassword":true} 返回 204。
-func (c *Client) ResetPassword(ctx context.Context, id string) error {
-	body := map[string]any{"ResetPassword": true}
-	return c.do(ctx, http.MethodPost, "/Users/"+url.PathEscape(id)+"/Password", nil, body, nil)
 }
 
 // AdminSetPassword 管理员直接改密码（单请求，原子设置新密码）。

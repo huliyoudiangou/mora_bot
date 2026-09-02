@@ -98,9 +98,7 @@ func (r *Router) handlePwdChangeStep(ctx context.Context, msg *Message) {
 	}
 	switch sess.Step {
 	case 0: // 安全码
-		hash, err := codes.HashSecurityCode(strings.TrimSpace(msg.Text), deps.Pepper)
-		if err != nil || hash != u.SecurityCodeHash {
-			sendText(ctx, deps, msg.ChatID, "❌ 安全码错误，请重新输入（或输入 /cancel 放弃）。")
+		if !r.verifySecurityCode(ctx, deps, msg, u.SecurityCodeHash) {
 			return
 		}
 		s2 := deps.Sessions.Advance(msg.From.ID, nil)
@@ -153,7 +151,7 @@ func (r *Router) handlePwdChangeStep(ctx context.Context, msg *Message) {
 			return
 		}
 		if err := deps.JF.AdminSetPassword(ctx, u.JellyfinUserID, newPw); err != nil {
-			sendText(ctx, deps, msg.ChatID, "修改密码失败："+err.Error())
+			sendText(ctx, deps, msg.ChatID, "修改密码失败，请稍后再试；多次失败请联系管理员。")
 			return
 		}
 		deps.Sessions.Clear(msg.From.ID)
@@ -213,9 +211,7 @@ func (r *Router) handlePwdResetStep(ctx context.Context, msg *Message) {
 	}
 	switch sess.Step {
 	case 0: // 安全码
-		hash, err := codes.HashSecurityCode(strings.TrimSpace(msg.Text), deps.Pepper)
-		if err != nil || hash != u.SecurityCodeHash {
-			sendText(ctx, deps, msg.ChatID, "❌ 安全码错误，请重新输入（或输入 /cancel 放弃）。")
+		if !r.verifySecurityCode(ctx, deps, msg, u.SecurityCodeHash) {
 			return
 		}
 		if u.PasswordResetCount >= maxPasswordResetCount {
@@ -233,7 +229,7 @@ func (r *Router) handlePwdResetStep(ctx context.Context, msg *Message) {
 			return
 		}
 		if err := deps.JF.AdminSetPassword(ctx, u.JellyfinUserID, newPw); err != nil {
-			sendText(ctx, deps, msg.ChatID, "重置密码失败："+err.Error())
+			sendText(ctx, deps, msg.ChatID, "重置密码失败，请稍后再试；多次失败请联系管理员。")
 			return
 		}
 		newCount := u.PasswordResetCount + 1
@@ -301,7 +297,7 @@ func (r *Router) handleSetSecurityStep(ctx context.Context, msg *Message) {
 		}
 		deps.Sessions.Clear(msg.From.ID)
 		if err := deps.DB.Model(&db.User{}).Where("telegram_id = ?", msg.From.ID).Update("security_code_hash", hash).Error; err != nil {
-			sendText(ctx, deps, msg.ChatID, "保存安全码失败："+err.Error())
+			sendText(ctx, deps, msg.ChatID, "保存安全码失败，请稍后再试；多次失败请联系管理员。")
 			return
 		}
 		sendText(ctx, deps, msg.ChatID, "✅ 安全码已设置。今后修改密码、解绑都需要它，请牢记（若遗忘需联系管理员）。")
@@ -349,9 +345,7 @@ func (r *Router) handleUnbindStep(ctx context.Context, msg *Message) {
 	}
 	switch sess.Step {
 	case 0: // 安全码
-		hash, err := codes.HashSecurityCode(strings.TrimSpace(msg.Text), deps.Pepper)
-		if err != nil || hash != u.SecurityCodeHash {
-			sendText(ctx, deps, msg.ChatID, "❌ 安全码错误，请重新输入（或输入 /cancel 放弃）。")
+		if !r.verifySecurityCode(ctx, deps, msg, u.SecurityCodeHash) {
 			return
 		}
 		s2 := deps.Sessions.Advance(msg.From.ID, nil)
@@ -391,17 +385,68 @@ func (r *Router) cmdAccountUnbindConfirmed(ctx context.Context, msg *Message) {
 	sendText(ctx, deps, msg.ChatID, "✅ 已解除绑定。Jellyfin 账号未被删除，之后可重新绑定。")
 }
 
-// cmdAccountDelete 删除账号（需 CONFIRM）。
-func (r *Router) cmdAccountDelete(ctx context.Context, msg *Message, args []string) {
+// cmdAccountDelete 删除账号：不可逆操作，与解绑同级要求安全码校验
+// （历史版本允许 /account delete CONFIRM 直接注销，命令路径绕过了身份二次校验）。
+// 流程：安全码 → CONFIRM。
+func (r *Router) cmdAccountDelete(ctx context.Context, msg *Message, _ []string) {
 	deps := r.deps
 	u, err := getLocal(ctx, deps, msg.From)
 	if err != nil {
 		sendText(ctx, deps, msg.ChatID, "查询失败。")
 		return
 	}
-	if len(args) == 0 || args[0] != "CONFIRM" {
+	if u.SecurityCodeHash == "" {
+		sendText(ctx, deps, msg.ChatID, "你还没有设置安全码，无法注销。请先点「🔐 设置安全码」设置后再试。")
+		return
+	}
+	deps.Sessions.Begin(msg.From.ID, sessDelete)
+	sendText(ctx, deps, msg.ChatID,
+		"🗑 注销账号\n此操作不可逆：将删除你的 Jellyfin 账号并清空订阅状态。\n请先输入你的<b>安全码</b>以验证身份：\n\n回复 /cancel 可取消。")
+}
+
+// handleDeleteStep 注销向导：安全码 → CONFIRM。
+func (r *Router) handleDeleteStep(ctx context.Context, msg *Message) {
+	deps := r.deps
+	sess := deps.Sessions.Current(msg.From.ID)
+	if sess == nil {
+		return
+	}
+	if isCancelText(msg.Text) {
+		deps.Sessions.Clear(msg.From.ID)
+		sendText(ctx, deps, msg.ChatID, "已取消注销。")
+		return
+	}
+	u, err := getLocal(ctx, deps, msg.From)
+	if err != nil {
+		sendText(ctx, deps, msg.ChatID, "查询失败。")
+		deps.Sessions.Clear(msg.From.ID)
+		return
+	}
+	switch sess.Step {
+	case 0: // 安全码
+		if ok := r.verifySecurityCode(ctx, deps, msg, u.SecurityCodeHash); !ok {
+			return
+		}
+		s2 := deps.Sessions.Advance(msg.From.ID, nil)
+		s2.Step = 1
 		sendText(ctx, deps, msg.ChatID,
-			"删除账号是不可逆操作。请发送 <code>/account delete CONFIRM</code>")
+			"✅ 安全码验证通过。\n请发送 <b>CONFIRM</b> 确认注销（将删除 Jellyfin 账号，不可恢复），或 /cancel 放弃。")
+	case 1: // CONFIRM
+		if !strings.EqualFold(strings.TrimSpace(msg.Text), "CONFIRM") {
+			sendHTML(ctx, deps, msg.ChatID, "请发送 <b>CONFIRM</b> 确认注销，或 /cancel 放弃。")
+			return
+		}
+		deps.Sessions.Clear(msg.From.ID)
+		_ = db.WriteAudit(deps.DB, msg.From.ID, "user_delete", "user", itoa(int(u.TelegramID)), "注销账号(安全码校验)")
+		r.doAccountDelete(ctx, msg)
+	}
+}
+
+// doAccountDelete 真正执行注销：删远程账号 + 本地档案标记注销并清空订阅状态。
+func (r *Router) doAccountDelete(ctx context.Context, msg *Message) {
+	deps := r.deps
+	u, err := getLocal(ctx, deps, msg.From)
+	if err != nil {
 		return
 	}
 	if u.JellyfinUserID != "" {
@@ -598,7 +643,7 @@ func cmdAccountDevicesClear(ctx context.Context, deps *HandlerDeps, cq *Callback
 		}
 		s := sessions[idx-1]
 		if err := deps.JF.DeleteDevice(ctx, s.DeviceID); err != nil {
-			sendText(ctx, deps, cq.ChatID, "清理该设备失败："+err.Error())
+			sendText(ctx, deps, cq.ChatID, "清理该设备失败，请稍后再试。")
 			return
 		}
 		name := strings.TrimSpace(s.DeviceName)
@@ -613,7 +658,7 @@ func cmdAccountDevicesClear(ctx context.Context, deps *HandlerDeps, cq *Callback
 	}
 	n, err := deps.JF.LogoutAllDevices(ctx, u.JellyfinUserID)
 	if err != nil {
-		sendText(ctx, deps, cq.ChatID, "清理登录设备失败："+err.Error())
+		sendText(ctx, deps, cq.ChatID, "清理登录设备失败，请稍后再试。")
 		return
 	}
 	_ = db.WriteAudit(deps.DB, cq.From.ID, "user_logout_devices", "user",

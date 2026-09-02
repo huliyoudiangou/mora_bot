@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Config is a snapshot of process configuration.
@@ -28,9 +27,6 @@ type Config struct {
 	JellyfinURL            string
 	JellyfinAPIKey         string
 	JellyfinTemplateUserID string
-
-	MetricsEnabled bool
-	MetricsAddr    string
 
 	Brand   string
 	Verbose bool
@@ -100,8 +96,6 @@ func Load() (*Config, error) {
 		JellyfinURL:            env("JELLYFIN_URL", ""),
 		JellyfinAPIKey:         env("JELLYFIN_API_KEY", ""),
 		JellyfinTemplateUserID: env("JELLYFIN_TEMPLATE_USER_ID", ""),
-		MetricsEnabled:         envBool("METRICS_ENABLED", false),
-		MetricsAddr:            env("METRICS_ADDR", ":9095"),
 		Brand:                  env("BRAND", "mora"),
 		Verbose:                envBool("VERBOSE", true),
 		SignBaseReward:         envInt("SIGN_BASE_REWARD", 5),
@@ -150,9 +144,7 @@ func envInt64(k string, def int64) int64 {
 	return def
 }
 
-// Watch 热更新占位：mora_bot 当前以进程重启方式应用配置变化。
-func Watch(_ func(*Config)) {}
-
+// env 读取字符串环境变量（空值回退默认）。
 func env(k, def string) string {
 	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 		return v
@@ -176,13 +168,6 @@ func envBool(k string, def bool) bool {
 		return true
 	case "0", "false", "no", "off":
 		return false
-	}
-	return def
-}
-
-func envDur(k string, def time.Duration) time.Duration {
-	if v, err := time.ParseDuration(strings.TrimSpace(os.Getenv(k))); err == nil && v > 0 {
-		return v
 	}
 	return def
 }
@@ -217,8 +202,11 @@ func loadEnvFile(path string) error {
 			continue
 		}
 		key := strings.TrimSpace(line[:eq])
-		key = strings.TrimPrefix(key, "export")
-		key = strings.TrimSpace(key)
+		// 兼容 "export KEY=VALUE"：仅在后随空白时剥离 export 前缀，
+		// 避免误伤以 export 开头的普通键名（如 exporter_mode）。
+		if rest, ok := strings.CutPrefix(key, "export"); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
+			key = strings.TrimSpace(rest)
+		}
 		val := strings.TrimSpace(line[eq+1:])
 		val = strings.Trim(val, `"'`)
 		if key != "" && os.Getenv(key) == "" {

@@ -87,14 +87,16 @@ func (r *Router) handleRedeemStep(ctx context.Context, msg *Message) {
 		days, newExpire.Format("2006-01-02")))
 }
 
-// redeemErrText 核销失败文案。
+// redeemErrText 核销失败文案：校验类错误给具体原因，事务内部错误一律脱敏。
 func redeemErrText(err error) string {
 	switch {
 	case errors.Is(err, codes.ErrCodeNotFound):
 		return "❌ 卡密不存在或已被使用。"
 	case errors.Is(err, codes.ErrCodeUsed):
 		return "❌ 该续期码已被使用。"
+	case errors.Is(err, errRedeemInternal):
+		return "❌ 核销失败，请稍后再试；多次失败请联系管理员。"
 	default:
-		return "❌ 核销失败：" + err.Error()
+		return "❌ " + err.Error()
 	}
 }

@@ -22,12 +22,7 @@ func chinaToday() string {
 	return tn.Format("2006-01-02")
 }
 
-// DoSignIn 完成签到：幂等（同一天仅一条），含连签加成（使用默认加成 1/7 天，无上限）。
-func DoSignIn(gdb *gorm.DB, userID int64, reward int) (*SignInRecord, error) {
-	return DoSignInWithBonus(gdb, userID, reward, 1, 0)
-}
-
-// DoSignInWithBonus 与 DoSignIn 相同，但允许配置连签加成与上限。
+// DoSignInWithBonus 完成签到：幂等（同一天仅一条），含连签加成。
 // bonus: 每满 SignStreakBonusEvery 天额外奖励的果果币（<=0 用默认 1）
 // bonusCap: 总加成上限（<=0 表示不限）
 func DoSignInWithBonus(gdb *gorm.DB, userID int64, reward, bonus, bonusCap int) (*SignInRecord, error) {
@@ -77,18 +72,26 @@ func DoSignInWithBonus(gdb *gorm.DB, userID int64, reward, bonus, bonusCap int) 
 			}
 			return err
 		}
-		newBal := u.GuoGuo + realReward
-		if err := tx.Model(&u).Updates(map[string]any{
-			"guo_guo":      newBal,
-			"sign_streak":  streak,
-			"last_sign_at": time.Now(),
-		}).Error; err != nil {
+		// 余额用 SQL 原子表达式累加：与商店扣费/管理员调账并发时不会丢失更新
+		// （读-改-写写法会基于旧余额覆盖其他操作的结果）。
+		if err := tx.Model(&User{}).
+			Where("telegram_id = ?", userID).
+			Updates(map[string]any{
+				"guo_guo":      gorm.Expr("guo_guo + ?", realReward),
+				"sign_streak":  streak,
+				"last_sign_at": time.Now(),
+			}).Error; err != nil {
+			return err
+		}
+		// 事务内重读最终余额，保证流水 BalanceAfter 与库中一致。
+		var bal User
+		if err := tx.Select("guo_guo").Where("telegram_id = ?", userID).First(&bal).Error; err != nil {
 			return err
 		}
 		txn := PointTransaction{
 			UserID:       userID,
 			Change:       realReward,
-			BalanceAfter: newBal,
+			BalanceAfter: bal.GuoGuo,
 			Type:         TxSignInDaily,
 			Remark:       "每日签到",
 		}

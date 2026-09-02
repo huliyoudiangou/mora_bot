@@ -26,6 +26,14 @@ func extractURL(s string) string {
 		return ""
 	}
 	m = strings.TrimRight(m, "，。、；;！!？?）)】》\"'）).，,，")
+	// Telegram 的 URL 按钮不接受引号/尖括号/反引号/控制字符，
+	// 带这种链接的按钮会让整条管理员通知发送失败（工单静默丢失）。
+	// 在唯一入口处截断，保证后续按钮 URL 恒为 Telegram 可接受的形式。
+	if i := strings.IndexFunc(m, func(r rune) bool {
+		return r < 0x21 || r == 0x7f || r == '"' || r == '<' || r == '>' || r == '`'
+	}); i >= 0 {
+		m = m[:i]
+	}
 	return m
 }
 

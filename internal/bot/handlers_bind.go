@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +47,7 @@ const (
 	sessPwdChange   = "account_pwd_change"   // 修改密码：第 1 步安全码 → 第 2 步旧密码 → 第 3 步新密码
 	sessPwdReset    = "account_pwd_reset"    // 忘记密码重置：第 1 步安全码 → 第 2 步新密码
 	sessUnbind      = "account_unbind"       // 解绑：第 1 步安全码 → 第 2 步确认
+	sessDelete      = "account_delete"       // 注销：第 1 步安全码 → 第 2 步 CONFIRM（不可逆，需双重校验）
 )
 
 // bindMu 串行化“检查 JF 是否已绑定 + 写入本地绑定”，防止并发下两个 TG 同时绑定同一 JF 账号。
@@ -187,14 +189,19 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 		if inviteClaimed {
 			releaseInviteCode(deps, inviteID, msg.From.ID)
 		}
-		sendText(ctx, deps, msg.ChatID, "创建 Jellyfin 用户失败："+err.Error())
+		// 不把 Jellyfin 原始错误透给用户；400 通常即用户名被占用/不合法。
+		if jellyfin.StatusCode(err) == http.StatusBadRequest {
+			sendText(ctx, deps, msg.ChatID, "创建失败：用户名可能已被占用或不合法，请换一个用户名后重新 /register。")
+		} else {
+			sendText(ctx, deps, msg.ChatID, "创建 Jellyfin 用户失败，请稍后再试或联系管理员。")
+		}
 		deps.Sessions.Clear(msg.From.ID)
 		return
 	}
 	// 权限/设置克隆自模板用户（Policy + Configuration 1:1 复刻）
 	if deps.JFServerBase != "" {
 		if err := deps.JF.ClonePolicyFromTemplate(ctx, deps.JFServerBase, ju.ID); err != nil {
-			sendText(ctx, deps, msg.ChatID, "注册成功，但模板权限同步失败："+err.Error())
+			sendText(ctx, deps, msg.ChatID, "注册成功，但模板权限同步失败，请联系管理员调整权限。")
 		}
 	}
 	u, err := ensureUser(ctx, deps, msg.From)
@@ -226,7 +233,7 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 		if inviteClaimed {
 			releaseInviteCode(deps, inviteID, msg.From.ID)
 		}
-		sendText(ctx, deps, msg.ChatID, "注册成功，但本地档案保存失败，已回滚刚创建的 Jellyfin 账号："+err.Error())
+		sendText(ctx, deps, msg.ChatID, "注册成功，但本地档案保存失败，已回滚刚创建的 Jellyfin 账号，请稍后再试。")
 		deps.Sessions.Clear(msg.From.ID)
 		return
 	}
@@ -234,7 +241,7 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 	if deps.NewAccountValidDays > 0 && u.ExpireAt == nil && !u.IsPermanent {
 		t := time.Now().AddDate(0, 0, deps.NewAccountValidDays)
 		if err := deps.DB.Model(u).Update("expire_at", t).Error; err != nil {
-			sendText(ctx, deps, msg.ChatID, "注册成功，但有效期设置失败："+err.Error())
+			sendText(ctx, deps, msg.ChatID, "注册成功，但有效期设置失败，请联系管理员处理。")
 		}
 	}
 	deps.Sessions.Clear(msg.From.ID)
@@ -293,7 +300,8 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 	// 1. 用户侧自证（Jellyfin 官方认证接口）
 	res, err := deps.JF.AuthenticateByName(ctx, uName, pwd)
 	if err != nil {
-		sendText(ctx, deps, msg.ChatID, "验证失败："+err.Error())
+		// 网络层错误可能携带服务器地址/内部拓扑，不给用户透原始错误。
+		sendText(ctx, deps, msg.ChatID, "验证失败，Jellyfin 暂时无法连接，请稍后再试。")
 		return
 	}
 	switch res {
@@ -330,7 +338,7 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "该 Jellyfin 账号已被其他 Telegram 用户绑定，如需使用请先由对方解绑。")
 		return
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		sendText(ctx, deps, msg.ChatID, "查询绑定关系失败："+err.Error())
+		sendText(ctx, deps, msg.ChatID, "查询绑定关系失败，请稍后再试。")
 		return
 	}
 	u, err := ensureUser(ctx, deps, msg.From)
@@ -344,7 +352,7 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 		"bind_type":         db.BindTypeExisting,
 		"status":            db.UserStatusActive,
 	}).Error; err != nil {
-		sendText(ctx, deps, msg.ChatID, "绑定成功，但本地档案保存失败："+err.Error())
+		sendText(ctx, deps, msg.ChatID, "绑定成功，但本地档案保存失败，请联系管理员。")
 		return
 	}
 	sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 绑定成功：已关联 Jellyfin 账号「%s」。", ju.Name))

@@ -9,12 +9,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
-	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
 )
@@ -233,39 +232,15 @@ func ValidateCodeFormat(s string) (string, error) {
 	return s, nil
 }
 
+// deriveKey 从 pepper 派生卡密加密/HMAC 密钥。
+// 固定使用 HKDF-SHA256：密钥必须与历史数据保持一致，
+// 任何“回退到其他 KDF”的分支都会让已落库的哈希/密文失配，因此不设回退。
 func deriveKey(pepper string) ([]byte, error) {
 	salt := []byte("mora_bot-pepper-v1")
 	hk := hkdf.New(sha256.New, []byte(pepper), salt, nil)
 	out := make([]byte, 32)
-	if _, err := hk.Read(out); err == nil && !allZero(out) {
-		return out, nil
+	if _, err := io.ReadFull(hk, out); err != nil {
+		return nil, fmt.Errorf("派生密钥失败: %w", err)
 	}
-	// fallback 用 argon2id（注意时间会慢，但只为少数人）。
-	return argon2.IDKey([]byte(pepper), salt, 1, 64*1024, 4, 32), nil
-}
-
-func allZero(b []byte) bool {
-	for _, v := range b {
-		if v != 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// SafeMarshalForDebug 调试打印安全（清空明文）。
-func SafeMarshalForDebug(codes []CodeSecret) string {
-	redacted := make([]map[string]any, 0, len(codes))
-	for _, c := range codes {
-		redacted = append(redacted, map[string]any{
-			"kind":      c.Kind,
-			"batch_id":  c.BatchID,
-			"days":      c.Days,
-			"remark":    c.Remark,
-			"hash_head": c.Hash[:8],
-			"hash_tail": c.Hash[len(c.Hash)-8:],
-		})
-	}
-	b, _ := json.MarshalIndent(redacted, "", "  ")
-	return string(b)
+	return out, nil
 }

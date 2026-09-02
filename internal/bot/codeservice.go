@@ -16,6 +16,9 @@ import (
 // errPepperMissing 卡密主密钥未配置。
 var errPepperMissing = errors.New("SECURITY_PEPPER 未配置，卡密功能不可用")
 
+// errRedeemInternal 核销事务内部错误（不向用户透出细节）。
+var errRedeemInternal = errors.New("redeem internal error")
+
 // codesPerMessage 每条消息最多展示的卡密数：
 // 每行 = 25 字符卡密 + 13 字符 <code> 标签 + 换行 ≈ 39，100 行加标题约 3960 < 4096 上限。
 const codesPerMessage = 100
@@ -142,7 +145,8 @@ func redeemRenewalCode(deps *HandlerDeps, user *db.User, plainCode string) (int,
 		return 0, nil, codes.ErrCodeNotFound
 	}
 	if err != nil {
-		return 0, nil, err
+		// 查库异常属内部错误：包一层脱敏哨兵，避免 DB 错误文本透给用户。
+		return 0, nil, fmt.Errorf("%w: %v", errRedeemInternal, err)
 	}
 	if rec.Status != db.CodeStatusUnused {
 		return 0, nil, codes.ErrCodeUsed
@@ -164,7 +168,7 @@ func redeemRenewalCode(deps *HandlerDeps, user *db.User, plainCode string) (int,
 				"used_at": time.Now(),
 			})
 		if res.Error != nil {
-			return res.Error
+			return fmt.Errorf("%w: %v", errRedeemInternal, res.Error)
 		}
 		if res.RowsAffected == 0 {
 			return codes.ErrCodeUsed
@@ -175,7 +179,7 @@ func redeemRenewalCode(deps *HandlerDeps, user *db.User, plainCode string) (int,
 		var cur db.User
 		if err := tx.Select("telegram_id", "expire_at", "is_permanent").
 			Where("telegram_id = ?", user.TelegramID).First(&cur).Error; err != nil {
-			return err
+			return fmt.Errorf("%w: %v", errRedeemInternal, err)
 		}
 		now := time.Now()
 		if cur.IsPermanent {
@@ -193,7 +197,7 @@ func redeemRenewalCode(deps *HandlerDeps, user *db.User, plainCode string) (int,
 				updates["is_permanent"] = false
 			}
 			if err := tx.Model(&db.User{}).Where("telegram_id = ?", user.TelegramID).Updates(updates).Error; err != nil {
-				return err
+				return fmt.Errorf("%w: %v", errRedeemInternal, err)
 			}
 		}
 		// 续期审计

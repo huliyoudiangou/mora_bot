@@ -42,8 +42,13 @@ func (r *Router) HandleUpdate(ctx context.Context, upd *models.Update) {
 }
 
 // handleMessage 文本/命令消息。
+// 仅处理私聊消息：本 Bot 的全部功能都面向私聊设计（面板/会话/卡密/密码），
+// 群里误发的密码或卡密不应被处理并回显流程提示，也避免面板刷群。
 func (r *Router) handleMessage(ctx context.Context, m *models.Message) {
 	if m == nil || m.From == nil || m.Chat.ID == 0 {
+		return
+	}
+	if m.Chat.Type != models.ChatTypePrivate {
 		return
 	}
 	from := TGUser{

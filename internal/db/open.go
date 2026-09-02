@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -89,6 +88,3 @@ func AutoMigrate(gdb *gorm.DB) error {
 		&JellyfinLine{},
 	)
 }
-
-// now 便于测试 mock。
-var now = time.Now

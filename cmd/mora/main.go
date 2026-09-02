@@ -127,6 +127,7 @@ func main() {
 				deps.Sessions.GC()
 				deps.Lockers.GC(now)
 				deps.SessionLocks.GC(now)
+				bot.GCSecurityGuard(now)
 			}
 		}
 	}()

@@ -64,15 +64,6 @@ func (s *tgSender) AnswerCallback(ctx context.Context, id, text string, alert bo
 	return err
 }
 
-// SendMenuButton 发送带一个按钮的文本（按钮回调数据 url）。
-func (s *tgSender) SendMenuButton(ctx context.Context, chatID int64, text, buttonText, url string) error {
-	// 简单策略：纯文本 + 链接，按钮在非 miniapp 场景相当于明文。
-	if url == "" {
-		return s.SendText(ctx, chatID, text)
-	}
-	return s.SendText(ctx, chatID, fmt.Sprintf("%s\n\n[%s](%s)", text, buttonText, url))
-}
-
 // EditText 编辑消息。
 func (s *tgSender) EditText(ctx context.Context, chatID int64, messageID int, text string) error {
 	_, err := s.bot.EditMessageText(ctx, &tgbotapi.EditMessageTextParams{
@@ -234,6 +225,17 @@ func backupDatabase(ctx context.Context, gdb *gorm.DB, bot *tgbotapi.Bot, dbPath
 	return filepath.Base(dst), nil
 }
 
+// nextLocalHour 计算本地时区下一个 hour 点整的时间（今天已过则取明天）。
+// 不能用 UTC 语义的 Truncate：跨时区会把目标小时偏移到错误时刻。
+func nextLocalHour(hour int) time.Time {
+	now := time.Now()
+	next := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, now.Location())
+	if !next.After(now) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next
+}
+
 // startDailyBackup 每日定时备份循环。hour=-1 关闭。
 func startDailyBackup(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *tgbotapi.Bot, cfgBackupHour int, dbPath, encKey string, keepCount int, groupID int64) {
 	if cfgBackupHour < 0 || cfgBackupHour > 23 {
@@ -244,16 +246,10 @@ func startDailyBackup(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *t
 			if ctx.Err() != nil {
 				return
 			}
-			// 等待到下一个目标小时
-			now := time.Now()
-			next := now.Truncate(time.Hour).Add(time.Duration(cfgBackupHour) * time.Hour)
-			if !next.After(now) {
-				next = next.Add(24 * time.Hour)
-			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(time.Until(next)):
+			case <-time.After(time.Until(nextLocalHour(cfgBackupHour))):
 			}
 			name, err := backupDatabase(ctx, gdb, bot, dbPath, encKey, keepCount, groupID)
 			if err != nil {
@@ -300,17 +296,16 @@ func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot
 			if ctx.Err() != nil {
 				return
 			}
-			now := time.Now()
-			next := now.Truncate(time.Hour).Add(time.Duration(hour) * time.Hour)
-			if !next.After(now) {
-				next = next.Add(24 * time.Hour)
-			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(time.Until(next)):
+			case <-time.After(time.Until(nextLocalHour(hour))):
 			}
-			today := now.Format("2006-01-02")
+			// 关键：扫描用的“当前时间”必须在唤醒后重新取。
+			// 旧实现复用了休眠前捕获的 now，导致跨日后 today 永远是旧日期，
+			// 去重表把第二天起的所有用户都当成“今日已提醒”，提醒只会发一次。
+			scan := time.Now()
+			today := scan.Format("2006-01-02")
 			// 清理跨日旧记录，避免 sent 表无限增长
 			for id, day := range sent {
 				if day != today {
@@ -318,8 +313,8 @@ func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot
 				}
 			}
 			// 即将到期：expire_at 在 [now, now+notifyBeforeDays] 区间，且未永久
-			from := now
-			to := now.AddDate(0, 0, notifyBeforeDays)
+			from := scan
+			to := scan.AddDate(0, 0, notifyBeforeDays)
 			var users []struct {
 				TelegramID int64
 				ExpireAt   *time.Time

@@ -107,6 +107,9 @@ func (r *Router) continueSession(ctx context.Context, msg *Message) bool {
 	case sessUnbind:
 		r.handleUnbindStep(ctx, msg)
 		return true
+	case sessDelete:
+		r.handleDeleteStep(ctx, msg)
+		return true
 	}
 	return false
 }
@@ -141,8 +144,8 @@ var helpText = `
 🎬 追剧中心 — 提交求剧工单（红果短剧分享链接）
 🔗 绑定已有账号 — 把已有 Jellyfin 账号关联到本 bot（用户名+密码）
 📝 注册新账号 — 开通新 Jellyfin 账号（需邀请码；开注且有名额时免邀请码）
-⚙️ 账号管理 — 改密/解绑（需安全码）/注销/登录设备
-🔐 安全码 — 注册时设置；修改密码、重置密码、解绑需校验
+⚙️ 账号管理 — 改密/解绑/注销（均需安全码）/登录设备
+🔐 安全码 — 注册时设置；修改密码、重置密码、解绑、注销需校验（连续输错 5 次将临时锁定）
 🔑 重置密码 — 忘记 Jellyfin 密码时可用安全码重置，每用户最多 2 次
 🛠 管理面板 — 管理员统计与发卡（仅 /admin） 
 `

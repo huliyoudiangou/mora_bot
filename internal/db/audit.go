@@ -21,18 +21,3 @@ func WriteAudit(gdb *gorm.DB, actorID int64, action, targetType, targetID, detai
 		CreatedAt:  time.Now(),
 	}).Error
 }
-
-// LastAudit 最近 N 条审计（管理面板用）。
-func LastAudit(gdb *gorm.DB, limit int) ([]AuditLog, error) {
-	if gdb == nil {
-		return nil, ErrNilDB
-	}
-	if limit <= 0 || limit > 200 {
-		limit = 20
-	}
-	var out []AuditLog
-	if err := gdb.Order("id desc").Limit(limit).Find(&out).Error; err != nil {
-		return nil, err
-	}
-	return out, nil
-}

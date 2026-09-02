@@ -23,7 +23,6 @@ type Sender interface {
 	SendText(ctx context.Context, chatID int64, text string) error
 	SendTextHTML(ctx context.Context, chatID int64, html string) error
 	AnswerCallback(ctx context.Context, callbackID, text string, alert bool) error
-	SendMenuButton(ctx context.Context, chatID int64, text, buttonText, url string) error
 	EditText(ctx context.Context, chatID int64, messageID int, text string) error
 	// SendKeyboard 发送带内联键盘的消息（面板）。
 	SendKeyboard(ctx context.Context, chatID int64, text string, rows [][]KeyboardButton) error

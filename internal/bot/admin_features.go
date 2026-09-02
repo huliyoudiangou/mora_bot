@@ -56,7 +56,7 @@ func (r *Router) handleAdminAdjPointsStep(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "未找到该用户（tg_id="+itoa64s(tgID)+"）。")
 		return
 	}
-	if err := db.AddPoints(deps.DB, u.TelegramID, int(delta), "admin_adjust", "AdminPanel", 0); err != nil {
+	if err := db.AddPoints(deps.DB, u.TelegramID, int(delta), "admin_adjust", "AdminPanel", msg.From.ID); err != nil {
 		sendText(ctx, deps, msg.ChatID, "调整失败："+err.Error())
 		return
 	}
@@ -396,7 +396,7 @@ func (r *Router) handleAdminLineDelStep(ctx context.Context, msg *Message) {
 func sendLineList(ctx context.Context, deps *HandlerDeps, chatID int64) {
 	var lines []db.JellyfinLine
 	if err := deps.DB.Order("`order` asc, id asc").Find(&lines).Error; err != nil {
-		sendText(ctx, deps, chatID, "查询线路失败："+err.Error())
+		sendText(ctx, deps, chatID, "查询线路失败，请稍后再试。")
 		return
 	}
 	if len(lines) == 0 {
