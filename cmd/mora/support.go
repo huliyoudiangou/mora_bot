@@ -306,6 +306,12 @@ func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot
 			case <-time.After(time.Until(next)):
 			}
 			today := now.Format("2006-01-02")
+			// 清理跨日旧记录，避免 sent 表无限增长
+			for id, day := range sent {
+				if day != today {
+					delete(sent, id)
+				}
+			}
 			// 即将到期：expire_at 在 [now, now+notifyBeforeDays] 区间，且未永久
 			from := now
 			to := now.AddDate(0, 0, notifyBeforeDays)
