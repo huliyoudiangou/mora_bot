@@ -490,11 +490,14 @@ func handleAdminUserCallback(ctx context.Context, deps *HandlerDeps, cq *Callbac
 				return
 			}
 		}
-		deps.DB.Model(&u).Updates(map[string]any{
+		if err := deps.DB.Model(&u).Updates(map[string]any{
 			"status":         db.UserStatusActive,
 			"is_suspended":   false,
 			"suspend_reason": "",
-		})
+		}).Error; err != nil {
+			sendText(ctx, deps, cq.ChatID, "启用本地档案失败："+err.Error())
+			return
+		}
 		_ = db.WriteAudit(deps.DB, cq.From.ID, "admin_user_enable", "user", itoa(int(u.TelegramID)), "启用用户（Jellyfin 同步）")
 	case "user:disable":
 		if deps.JF != nil && u.JellyfinUserID != "" {
@@ -503,11 +506,14 @@ func handleAdminUserCallback(ctx context.Context, deps *HandlerDeps, cq *Callbac
 				return
 			}
 		}
-		deps.DB.Model(&u).Updates(map[string]any{
+		if err := deps.DB.Model(&u).Updates(map[string]any{
 			"status":         db.UserStatusDisabled,
 			"is_suspended":   true,
 			"suspend_reason": "管理员停用",
-		})
+		}).Error; err != nil {
+			sendText(ctx, deps, cq.ChatID, "停用本地档案失败："+err.Error())
+			return
+		}
 		_ = db.WriteAudit(deps.DB, cq.From.ID, "admin_user_disable", "user", itoa(int(u.TelegramID)), "停用用户（Jellyfin 同步）")
 	}
 }

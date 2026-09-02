@@ -201,17 +201,29 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 		deps.Sessions.Clear(msg.From.ID)
 		return
 	}
-	_ = deps.DB.Model(u).Updates(map[string]any{
+	if err := deps.DB.Model(u).Updates(map[string]any{
 		"jellyfin_user_id":   ju.ID,
 		"jellyfin_username":  uName,
 		"bind_type":          db.BindTypeRegistered,
 		"status":             db.UserStatusActive, // 重新注册后恢复活跃（曾注销的用户）
 		"security_code_hash": secHash,
-	}).Error
+	}).Error; err != nil {
+		if slotTaken {
+			refundOpenRegSlot(deps)
+		}
+		if inviteClaimed {
+			releaseInviteCode(deps, inviteID)
+		}
+		sendText(ctx, deps, msg.ChatID, "注册成功，但本地档案保存失败："+err.Error())
+		deps.Sessions.Clear(msg.From.ID)
+		return
+	}
 	// 新注册账号默认有效期（NEW_ACCOUNT_VALID_DAYS，0=永久）
 	if deps.NewAccountValidDays > 0 && u.ExpireAt == nil && !u.IsPermanent {
 		t := time.Now().AddDate(0, 0, deps.NewAccountValidDays)
-		_ = deps.DB.Model(u).Update("expire_at", t).Error
+		if err := deps.DB.Model(u).Update("expire_at", t).Error; err != nil {
+			sendText(ctx, deps, msg.ChatID, "注册成功，但有效期设置失败："+err.Error())
+		}
 	}
 	deps.Sessions.Clear(msg.From.ID)
 	sendText(ctx, deps, msg.ChatID, "✅ 注册成功，欢迎加入果果屋。")
@@ -301,12 +313,15 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "本地更新失败，稍后再试。")
 		return
 	}
-	_ = deps.DB.Model(u).Updates(map[string]any{
+	if err := deps.DB.Model(u).Updates(map[string]any{
 		"jellyfin_user_id":  ju.ID,
 		"jellyfin_username": ju.Name,
 		"bind_type":         db.BindTypeExisting,
 		"status":            db.UserStatusActive,
-	}).Error
+	}).Error; err != nil {
+		sendText(ctx, deps, msg.ChatID, "绑定成功，但本地档案保存失败："+err.Error())
+		return
+	}
 	sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 绑定成功：已关联 Jellyfin 账号「%s」。", ju.Name))
 }
 
