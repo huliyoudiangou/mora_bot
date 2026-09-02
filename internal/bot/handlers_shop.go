@@ -143,6 +143,7 @@ func (r *Router) cmdShopBuyInvite(ctx context.Context, msg *Message) {
 	var plain string
 	var ve error
 	exchangeQuotaMu.Lock()
+	defer exchangeQuotaMu.Unlock()
 	deps.Lockers.WithUser(msg.From.ID, func() {
 		ve = deps.DB.Transaction(func(tx *gorm.DB) error {
 			// 0) 配额再校验（全局互斥下核减，防多用户并发超发）
@@ -182,7 +183,6 @@ func (r *Router) cmdShopBuyInvite(ctx context.Context, msg *Message) {
 			return nil
 		})
 	})
-	exchangeQuotaMu.Unlock()
 	if ve != nil {
 		if ve == errQuotaExceeded {
 			sendText(ctx, deps, msg.ChatID, "积分兑换邀请码名额已满（管理员设置了配额）。")
