@@ -10,13 +10,15 @@ import (
 )
 
 // GetOrCreateUser 按 telegram_id 查或建用户档案。
-func GetOrCreateUser(gdb *gorm.DB, telegramID int64, username, _, _ string) (*User, error) {
+func GetOrCreateUser(gdb *gorm.DB, telegramID int64, username, firstName, lastName string) (*User, error) {
 	var u User
 	err := gdb.Where("telegram_id = ?", telegramID).First(&u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		u = User{
 			TelegramID: telegramID,
 			TgUsername: username,
+			FirstName:  firstName,
+			LastName:   lastName,
 			Status:     UserStatusActive,
 		}
 		if e2 := gdb.Create(&u).Error; e2 != nil {
@@ -34,6 +36,19 @@ func GetOrCreateUser(gdb *gorm.DB, telegramID int64, username, _, _ string) (*Us
 	if username != "" && u.TgUsername != username {
 		_ = gdb.Model(&u).Update("tg_username", username).Error
 		u.TgUsername = username
+	}
+	if firstName != "" && u.FirstName != firstName {
+		u.FirstName = firstName
+	}
+	if lastName != "" && u.LastName != lastName {
+		u.LastName = lastName
+	}
+	if u.FirstName != "" || u.LastName != "" || (username != "" && u.TgUsername != username) {
+		_ = gdb.Model(&u).Updates(map[string]any{
+			"tg_username": u.TgUsername,
+			"first_name":  u.FirstName,
+			"last_name":   u.LastName,
+		}).Error
 	}
 	return &u, nil
 }
