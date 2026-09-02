@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -518,25 +519,15 @@ func handleAdminUserCallback(ctx context.Context, deps *HandlerDeps, cq *Callbac
 	}
 }
 
-// parseInt64Safe 解析宽字符/digits int64；失败返回 0。
+// parseInt64Safe 解析宽字符/digits int64；失败或溢出返回 0。
 func parseInt64Safe(s string) int64 {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0
 	}
-	var r int64
-	var sign int64 = 1
-	i := 0
-	if strings.HasPrefix(s, "-") {
-		sign = -1
-		i = 1
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
 	}
-	for ; i < len(s); i++ {
-		c := s[i]
-		if c < '0' || c > '9' {
-			return 0
-		}
-		r = r*10 + int64(c-'0')
-	}
-	return r * sign
+	return v
 }
