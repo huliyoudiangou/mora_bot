@@ -128,7 +128,8 @@ func (r *Router) handlePwdChangeStep(ctx context.Context, msg *Message) {
 			// 绝不能报"旧密码错误"——那会让用户以为自己密码丢了。
 			// 用户已经通过安全码校验且本地绑定属于本人，因此这里不再卡死流程，
 			// 允许继续设置新密码；同时明确告知限制原因和后续处理方式。
-			s2 := deps.Sessions.Advance(msg.From.ID, map[string]any{"old_pw": oldPw})
+			// 不留存旧密码明文（校验完成后流程不再需要它）。
+			s2 := deps.Sessions.Advance(msg.From.ID, nil)
 			s2.Step = 2
 			sendHTML(ctx, deps, msg.ChatID,
 				"⚠️ 旧密码暂时无法在线校验，<b>这不代表你记错了密码</b>。\n\n"+
@@ -141,7 +142,7 @@ func (r *Router) handlePwdChangeStep(ctx context.Context, msg *Message) {
 			sendText(ctx, deps, msg.ChatID, "❌ 旧密码错误，请重新输入。")
 			return
 		}
-		s2 := deps.Sessions.Advance(msg.From.ID, map[string]any{"old_pw": oldPw})
+		s2 := deps.Sessions.Advance(msg.From.ID, nil)
 		s2.Step = 2
 		sendHTML(ctx, deps, msg.ChatID, "🔑 第 3/3 步\n请输入你的<b>新密码</b>（至少 6 位）：\n\n回复 /cancel 可取消。")
 	case 2: // 新密码

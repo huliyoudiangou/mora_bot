@@ -44,15 +44,10 @@ type HandlerDeps struct {
 
 	RenewalPrice int
 	RenewalDays  int
-	SignInReward int
 
 	// PriceInviteCode 邀请码价格（果果币）（PRICE_INVITE_CODE）。
 	PriceInviteCode int
 
-	// SignStreakBonus 每满 7 天连续签到额外奖励果果币（SIGN_STREAK_BONUS）。
-	SignStreakBonus int
-	// SignStreakBonusCap 连续签到达成的总加成上限（0=不限）。
-	SignStreakBonusCap int
 	// NewAccountValidDays 新注册账号默认有效天数（0=永久）。
 	NewAccountValidDays int
 	// DramaDailyLimit 每用户每天最多提交求剧数（0=不限）。

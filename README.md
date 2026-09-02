@@ -13,7 +13,7 @@ mora_bot 是一个用 Go 编写的 **Jellyfin 用户管理 Telegram Bot**：让�
 | 卡密 | 面板交互式发卡：邀请码选数量；续期码先选天数再选数量 | ✅   |
 | 卡密 | 果果币兑换续期码 / 邀请码（/shop buy，价格运行时可在管理面板调整）                                               | ✅   |
 | 卡密 | 续期码核销（/redeem）                                                                                           | ✅   |
-| 积分 | 每日签到 + 连签加成 + 完整流水                                                                                  | ✅   |
+| 积分 | 每日签到固定 5 果果币（无连签加成）+ 完整流水                                                                    | ✅   |
 | 追剧 | 追剧中心：用户提交红果短剧求剧工单（/drama）                                                                    | ✅   |
 | 管理 | 管理/用户面板分离：/start 仅用户面板，管理面板仅 /admin（tg_id 须与 env 一致）                                  | ✅   |
 | 管理 | 管理面板：统计 / 发卡 / 调积分 / 查用户 / 卡密溯源 / 白名单 / 卡密定价 / Jellyfin 线路管理                      | ✅   |
@@ -71,7 +71,7 @@ docker compose restart
 **必填**：`TELEGRAM_BOT_TOKEN`、`JELLYFIN_API_KEY`、`SECURITY_PEPPER`。
 **管理员**：`ADMIN_TELEGRAM_IDS`（与 `SUPER_ADMIN_TG_IDS` 兼容）。
 **模板用户**：`JELLYFIN_TEMPLATE_USER_ID`。
-**经济**：`SIGN_BASE_REWARD`、`SIGN_STREAK_BONUS`、`SIGN_STREAK_BONUS_CAP`、`PRICE_RENEWAL_CODE`、`DEFAULT_RENEWAL_DAYS`、`PRICE_INVITE_CODE`。
+**经济**：`PRICE_RENEWAL_CODE`、`DEFAULT_RENEWAL_DAYS`、`PRICE_INVITE_CODE`。（签到奖励固定为每日 5 果果币，无连签加成，不再走配置。）
 **账号有效期**：`NEW_ACCOUNT_VALID_DAYS`（新注册默认天数，0=永久）、`NOTIFY_BEFORE_DAYS`。
 **追剧**：`DRAMA_REQUEST_DAILY_LIMIT`（每日求剧上限，0=不限）。
 **通知**：`NOTICE_GROUP_ID`、`BOT_STARTUP_NOTIFY_ADMINS`。
@@ -90,7 +90,7 @@ docker compose restart
 
 | 面板按钮 | 说明 |
 | -------- | ---- |
-| ✅ 每日签到 | 领果果币（连签有加成） |
+| ✅ 每日签到 | 每日固定领 5 果果币 |
 | 👤 我的账号 | 订阅状态 / 果果币 |
 | 🛒 果果币商店 | 购买续期码 / 邀请码 |
 | 🎬 追剧中心 | 提交求剧工单 / 查看记录 |
@@ -109,7 +109,7 @@ docker compose restart
 | 命令           | 说明                                       |
 | -------------- | ------------------------------------------ |
 | `/start` `/menu` | 打开主面板                              |
-| `/signin`      | 每日签到，得果果币                         |
+| `/signin`      | 每日签到，固定得 5 果果币                  |
 | `/profile`     | 查看账号与订阅                             |
 | `/shop`        | 果果币商店（`/shop buy` 购买续期码）       |
 | `/redeem <码>` | 核销续期码续期                             |

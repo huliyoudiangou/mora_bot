@@ -95,7 +95,8 @@ func (r *Router) handleRegStepInvite(ctx context.Context, msg *Message) {
 		deps.Sessions.Clear(msg.From.ID)
 		return
 	}
-	sess := deps.Sessions.Advance(msg.From.ID, map[string]any{"invite_id": inv.ID, "code": code})
+	// 只存 invite_id：占用按 ID 原子进行，邀请码明文校验后不再需要留存。
+	sess := deps.Sessions.Advance(msg.From.ID, map[string]any{"invite_id": inv.ID})
 	sess.Kind = sessRegUsername
 	sendText(ctx, deps, msg.ChatID, "第 2/4 步：请设置你的 Jellyfin 用户名。")
 }

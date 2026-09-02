@@ -7,11 +7,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SignRewardDefault 默认每日签到奖励果果币。
-const SignRewardDefault = 10
-
-// SignStreakBonusEvery 每连续 N 天签到再奖励 1 枚。
-const SignStreakBonusEvery = 7
+// SignRewardFixed 每日签到固定奖励果果币（产品规则：不设连签加成）。
+const SignRewardFixed = 5
 
 // ChinaLoc 东八区固定时区（容器无 tzdata 时也能工作）。
 var ChinaLoc = time.FixedZone("CST", 8*3600)
@@ -22,19 +19,13 @@ func chinaToday() string {
 	return tn.Format("2006-01-02")
 }
 
-// DoSignInWithBonus 完成签到：幂等（同一天仅一条），含连签加成。
-// bonus: 每满 SignStreakBonusEvery 天额外奖励的果果币（<=0 用默认 1）
-// bonusCap: 总加成上限（<=0 表示不限）
-func DoSignInWithBonus(gdb *gorm.DB, userID int64, reward, bonus, bonusCap int) (*SignInRecord, error) {
+// DoSignIn 完成签到：幂等（同一天仅一条），固定奖励 SignRewardFixed，
+// 连签天数照常累计但不再产生额外加成。
+func DoSignIn(gdb *gorm.DB, userID int64) (*SignInRecord, error) {
 	if gdb == nil {
 		return nil, ErrNilDB
 	}
-	if reward <= 0 {
-		reward = SignRewardDefault
-	}
-	if bonus <= 0 {
-		bonus = 1
-	}
+	reward := SignRewardFixed
 	day := chinaToday()
 	var rec SignInRecord
 	err := gdb.Transaction(func(tx *gorm.DB) error {
@@ -56,16 +47,7 @@ func DoSignInWithBonus(gdb *gorm.DB, userID int64, reward, bonus, bonusCap int) 
 		} else {
 			streak = 1
 		}
-		// 加成：每满 bonusEvery 天 +bonus，且不超过 cap
-		addon := 0
-		if streak >= SignStreakBonusEvery {
-			addon = (streak / SignStreakBonusEvery) * bonus
-			if bonusCap > 0 && addon > bonusCap {
-				addon = bonusCap
-			}
-		}
-		realReward := reward + addon
-		rec = SignInRecord{UserID: userID, SignDay: day, Reward: realReward, Streak: streak}
+		rec = SignInRecord{UserID: userID, SignDay: day, Reward: reward, Streak: streak}
 		if err := tx.Create(&rec).Error; err != nil {
 			if isUniqueViolation(err) {
 				return ErrAlreadySignedIn
@@ -77,7 +59,7 @@ func DoSignInWithBonus(gdb *gorm.DB, userID int64, reward, bonus, bonusCap int) 
 		if err := tx.Model(&User{}).
 			Where("telegram_id = ?", userID).
 			Updates(map[string]any{
-				"guo_guo":      gorm.Expr("guo_guo + ?", realReward),
+				"guo_guo":      gorm.Expr("guo_guo + ?", reward),
 				"sign_streak":  streak,
 				"last_sign_at": time.Now(),
 			}).Error; err != nil {
@@ -90,7 +72,7 @@ func DoSignInWithBonus(gdb *gorm.DB, userID int64, reward, bonus, bonusCap int) 
 		}
 		txn := PointTransaction{
 			UserID:       userID,
-			Change:       realReward,
+			Change:       reward,
 			BalanceAfter: bal.GuoGuo,
 			Type:         TxSignInDaily,
 			Remark:       "每日签到",

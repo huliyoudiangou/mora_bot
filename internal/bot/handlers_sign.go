@@ -8,7 +8,7 @@ import (
 	"mora_bot/internal/db"
 )
 
-// cmdSignin /signin
+// cmdSignin /signin：每日固定奖励（5 果果币），无连签加成。
 func (r *Router) cmdSignin(ctx context.Context, msg *Message, args []string) {
 	deps := r.deps
 	u, err := ensureUser(ctx, deps, msg.From)
@@ -16,15 +16,9 @@ func (r *Router) cmdSignin(ctx context.Context, msg *Message, args []string) {
 		sendText(ctx, deps, msg.ChatID, "系统繁忙，请稍后再试。")
 		return
 	}
-	reward := deps.SignInReward
-	if reward <= 0 {
-		reward = db.SignRewardDefault
-	}
-	bonus := deps.SignStreakBonus
-	bonusCap := deps.SignStreakBonusCap
 	var signed *db.SignInRecord
 	deps.Lockers.WithUser(msg.From.ID, func() {
-		s, e := db.DoSignInWithBonus(deps.DB, u.TelegramID, reward, bonus, bonusCap)
+		s, e := db.DoSignIn(deps.DB, u.TelegramID)
 		if e != nil {
 			sendText(ctx, deps, msg.ChatID, signinErrText(e))
 			return

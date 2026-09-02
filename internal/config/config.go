@@ -31,12 +31,7 @@ type Config struct {
 	Brand string
 
 	// ---------- 经济 / 签到 ----------
-	// 每日签到基础果果币（SIGN_BASE_REWARD）
-	SignBaseReward int
-	// 连续签到加成：每满 SignStreakBonusEvery 天额外奖励 bonus 枚（SIGN_STREAK_BONUS）
-	SignStreakBonus int
-	// 连续签到加成上限：总加成不超过该值（SIGN_STREAK_BONUS_CAP，0=不限）
-	SignStreakBonusCap int
+	// 每日签到为固定奖励（db.SignRewardFixed = 5），不再走配置。
 	// 续期码价格（果果币）（PRICE_RENEWAL_CODE）
 	PriceRenewalCode int
 	// 续期码默认天数（DEFAULT_RENEWAL_DAYS）
@@ -96,9 +91,6 @@ func Load() (*Config, error) {
 		JellyfinAPIKey:         env("JELLYFIN_API_KEY", ""),
 		JellyfinTemplateUserID: env("JELLYFIN_TEMPLATE_USER_ID", ""),
 		Brand:                  env("BRAND", "mora"),
-		SignBaseReward:         envInt("SIGN_BASE_REWARD", 5),
-		SignStreakBonus:        envInt("SIGN_STREAK_BONUS", 1),
-		SignStreakBonusCap:     envInt("SIGN_STREAK_BONUS_CAP", 0),
 		PriceRenewalCode:       envInt("PRICE_RENEWAL_CODE", 150),
 		DefaultRenewalDays:     envInt("DEFAULT_RENEWAL_DAYS", 30),
 		PriceInviteCode:        envInt("PRICE_INVITE_CODE", 300),

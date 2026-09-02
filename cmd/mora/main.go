@@ -78,9 +78,7 @@ func main() {
 		Pepper:              cfg.SecurityPepper,
 		RenewalPrice:        cfg.PriceRenewalCode,
 		RenewalDays:         cfg.DefaultRenewalDays,
-		SignInReward:        cfg.SignBaseReward,
-		SignStreakBonus:     cfg.SignStreakBonus,
-		SignStreakBonusCap:  cfg.SignStreakBonusCap,
+		PriceInviteCode:     cfg.PriceInviteCode,
 		NewAccountValidDays: cfg.NewAccountValidDays,
 		DramaDailyLimit:     cfg.DramaDailyLimit,
 		IsSuper: func(tgID int64) bool {

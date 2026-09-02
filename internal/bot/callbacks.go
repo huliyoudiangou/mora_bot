@@ -259,9 +259,6 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 			deps.Sessions.Begin(cq.From.ID, sessAdminQuota)
 			sendHTML(ctx, deps, cq.ChatID, "🎟 设置积分兑换邀请码配额\n请输入允许兑换的邀请码<b>总数</b>（0=不限），例如：<code>10</code>\n\n回复 /cancel 可取消。")
 		}
-	case "user":
-		// admin:user:disable:1001 等（兼容旧回调）
-		handleAdminUserCallback(ctx, deps, cq, action, args)
 	case "tickets":
 		// admin:tickets → 工单子面板；admin:tickets:list:<status> → 按状态列表
 		switch {
@@ -472,67 +469,6 @@ func messageIDOf(cq *CallbackQuery) int {
 		return 0
 	}
 	return cq.MessageID
-}
-
-// handleAdminUserCallback 管理员对用户卡片的 inline 动作。
-// 回调数据实际格式：admin:user:disable:1001
-// 即 ParseCallbackData 拆出 domain="admin", action="user", args=["disable","1001"]，
-// 这里把 action 与 args[0] 重组为子动作（user:disable / user:enable）。
-func handleAdminUserCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, action string, args []string) {
-	if deps.IsSuper == nil || !deps.IsSuper(cq.From.ID) {
-		return
-	}
-	// 重组：admin:user:disable:1001 → subAction="user:disable", args=["1001"]
-	subAction := action
-	if action == "user" && len(args) >= 1 {
-		subAction = "user:" + args[0]
-		args = args[1:]
-	}
-	if len(args) == 0 {
-		return
-	}
-	tgID := parseInt64Safe(args[0])
-	if tgID == 0 {
-		return
-	}
-	var u db.User
-	if err := deps.DB.Where("telegram_id = ?", tgID).First(&u).Error; err != nil {
-		return
-	}
-	switch subAction {
-	case "user:enable":
-		if deps.JF != nil && u.JellyfinUserID != "" {
-			if err := deps.JF.SetUserDisabled(ctx, u.JellyfinUserID, false); err != nil {
-				sendText(ctx, deps, cq.ChatID, "启用 Jellyfin 账号失败："+err.Error())
-				return
-			}
-		}
-		if err := deps.DB.Model(&u).Updates(map[string]any{
-			"status":         db.UserStatusActive,
-			"is_suspended":   false,
-			"suspend_reason": "",
-		}).Error; err != nil {
-			sendText(ctx, deps, cq.ChatID, "启用本地档案失败："+err.Error())
-			return
-		}
-		_ = db.WriteAudit(deps.DB, cq.From.ID, "admin_user_enable", "user", itoa(int(u.TelegramID)), "启用用户（Jellyfin 同步）")
-	case "user:disable":
-		if deps.JF != nil && u.JellyfinUserID != "" {
-			if err := deps.JF.SetUserDisabled(ctx, u.JellyfinUserID, true); err != nil {
-				sendText(ctx, deps, cq.ChatID, "停用 Jellyfin 账号失败："+err.Error())
-				return
-			}
-		}
-		if err := deps.DB.Model(&u).Updates(map[string]any{
-			"status":         db.UserStatusDisabled,
-			"is_suspended":   true,
-			"suspend_reason": "管理员停用",
-		}).Error; err != nil {
-			sendText(ctx, deps, cq.ChatID, "停用本地档案失败："+err.Error())
-			return
-		}
-		_ = db.WriteAudit(deps.DB, cq.From.ID, "admin_user_disable", "user", itoa(int(u.TelegramID)), "停用用户（Jellyfin 同步）")
-	}
 }
 
 // parseInt64Safe 解析宽字符/digits int64；失败或溢出返回 0。
