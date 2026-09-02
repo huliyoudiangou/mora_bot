@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -45,6 +46,9 @@ const (
 	sessPwdChange   = "account_pwd_change"    // 修改密码：第 1 步安全码 → 第 2 步旧密码 → 第 3 步新密码
 	sessUnbind      = "account_unbind"        // 解绑：第 1 步安全码 → 第 2 步确认
 )
+
+// bindMu 串行化“检查 JF 是否已绑定 + 写入本地绑定”，防止并发下两个 TG 同时绑定同一 JF 账号。
+var bindMu sync.Mutex
 
 // cmdRegister /register 注册新 Jellyfin 账号（开注且有名额时免邀请码，否则需邀请码）。
 func (r *Router) cmdRegister(ctx context.Context, msg *Message, args []string) {
@@ -311,6 +315,9 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "未能在 Jellyfin 找到该账号，请稍后再试。")
 		return
 	}
+	// 全局串行化检查+写入，避免两个 TG 并发绑定同一 JF 账号都通过检查。
+	bindMu.Lock()
+	defer bindMu.Unlock()
 	// 防止同一 Jellyfin 账号被多个 Telegram 用户绑定。
 	if existing, err := db.FindUserByJellyfinID(deps.DB, ju.ID); err == nil && existing != nil && existing.TelegramID != msg.From.ID {
 		sendText(ctx, deps, msg.ChatID, "该 Jellyfin 账号已被其他 Telegram 用户绑定，如需使用请先由对方解绑。")
