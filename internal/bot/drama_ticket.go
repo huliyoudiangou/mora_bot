@@ -360,8 +360,10 @@ func editAdminDramaCard(ctx context.Context, deps *HandlerDeps, cq *CallbackQuer
 // handleAdminDramaRejectStep 驳回理由收集：收到理由文本后执行驳回并通知用户。
 func (r *Router) handleAdminDramaRejectStep(ctx context.Context, msg *Message) {
 	deps := r.deps
-	if !deps.IsSuper(msg.From.ID) {
-		deps.Sessions.Clear(msg.From.ID)
+	if deps == nil || deps.IsSuper == nil || !deps.IsSuper(msg.From.ID) {
+		if deps != nil {
+			deps.Sessions.Clear(msg.From.ID)
+		}
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(msg.Text), "/cancel") {
