@@ -204,7 +204,12 @@ func backupDatabase(ctx context.Context, gdb *gorm.DB, bot *tgbotapi.Bot, dbPath
 				if e.IsDir() {
 					continue
 				}
-				names = append(names, e.Name())
+				name := e.Name()
+				// 只清理本程序生成的备份文件，避免误删目录中其它文件。
+				if !strings.HasSuffix(name, ".db") && !strings.HasSuffix(name, ".db.enc") {
+					continue
+				}
+				names = append(names, name)
 			}
 			sort.Strings(names)
 			// 从最旧开始删
