@@ -126,6 +126,7 @@ func main() {
 			case now := <-t.C:
 				deps.Sessions.GC()
 				deps.Lockers.GC(now)
+				deps.SessionLocks.GC(now)
 			}
 		}
 	}()
