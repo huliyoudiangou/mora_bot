@@ -24,6 +24,20 @@ func GetOrCreateUser(gdb *gorm.DB, telegramID int64, username, firstName, lastNa
 		if e2 := gdb.Create(&u).Error; e2 != nil {
 			var u2 User
 			if e3 := gdb.Where("telegram_id = ?", telegramID).First(&u2).Error; e3 == nil {
+				// 并发创建冲突时，也把本次消息里的用户名/姓名补写到已有档案。
+				updates := map[string]any{}
+				if username != "" && u2.TgUsername != username {
+					updates["tg_username"] = username
+				}
+				if firstName != "" && u2.FirstName != firstName {
+					updates["first_name"] = firstName
+				}
+				if lastName != "" && u2.LastName != lastName {
+					updates["last_name"] = lastName
+				}
+				if len(updates) > 0 {
+					_ = gdb.Model(&u2).Updates(updates).Error
+				}
 				return &u2, nil
 			}
 			return nil, e2
