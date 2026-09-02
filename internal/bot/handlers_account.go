@@ -402,7 +402,7 @@ func devicesText(sessions []jellyfin.UserSession, maxSessions int) string {
 	return b.String()
 }
 
-// cmdAccountDevices 展示当前在线设备列表。
+// cmdAccountDevices 展示当前在线设备列表，并可逐个选择清理。
 func cmdAccountDevices(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery) {
 	_, sessions, maxSessions, ok := accountDevicesContext(ctx, deps, cq)
 	if !ok {
@@ -410,6 +410,14 @@ func cmdAccountDevices(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery
 	}
 	rows := [][]KeyboardButton{}
 	if len(sessions) > 0 {
+		// 每个设备一行「清理」按钮，让用户选择具体踢哪一台，而不是只能一键清理全部。
+		for i := range sessions {
+			idx := i + 1
+			rows = append(rows, []KeyboardButton{
+				{Text: "🧹 清理设备 " + itoa(idx), Data: BuildCallbackData(DKAccount, "devices", "clear", itoa(idx))},
+			})
+		}
+		// 保留“全部清理”作为可选快捷方式，且仍需二次确认。
 		rows = append(rows, []KeyboardButton{
 			{Text: "🧹 清理全部设备", Data: BuildCallbackData(DKAccount, "devices", "clear")},
 		})
@@ -423,9 +431,18 @@ func cmdAccountDevices(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery
 	sendPanel(ctx, deps, cq.ChatID, messageIDOf(cq), devicesText(sessions, maxSessions), rows)
 }
 
-// cmdAccountDevicesConfirm 二次确认。清理是可恢复操作（重新登录即可），
-// 所以不像解绑/注销那样要安全码，但仍要一次显式确认，避免误触把自己正在看的剧踢下线。
-func cmdAccountDevicesConfirm(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery) {
+// deviceDisplayName 返回设备展示名（无名称时用未知设备）。
+func deviceDisplayName(s jellyfin.UserSession) string {
+	name := strings.TrimSpace(s.DeviceName)
+	if name == "" {
+		name = "未知设备"
+	}
+	return escapeHTML(name)
+}
+
+// cmdAccountDevicesConfirm 二次确认。idx>0 表示清理指定设备，idx=0 表示清理全部。
+// 清理是可恢复操作（重新登录即可），所以不像解绑/注销那样要安全码，但仍要一次显式确认。
+func cmdAccountDevicesConfirm(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, idx int) {
 	_, sessions, maxSessions, ok := accountDevicesContext(ctx, deps, cq)
 	if !ok {
 		return
@@ -434,19 +451,37 @@ func cmdAccountDevicesConfirm(ctx context.Context, deps *HandlerDeps, cq *Callba
 		cmdAccountDevices(ctx, deps, cq)
 		return
 	}
-	text := devicesText(sessions, maxSessions) +
-		fmt.Sprintf("\n\n❓ 确认要清理全部 <b>%d</b> 台设备吗？\n清理后这些设备都需要重新登录（正在播放的会中断）。", len(sessions))
+	var text string
+	if idx > 0 {
+		if idx > len(sessions) {
+			cmdAccountDevices(ctx, deps, cq)
+			return
+		}
+		s := sessions[idx-1]
+		line := fmt.Sprintf("设备：<b>%s</b>", deviceDisplayName(s))
+		if c := strings.TrimSpace(s.Client); c != "" {
+			line += "\n客户端：" + escapeHTML(c)
+		}
+		if !s.LastActivity.IsZero() {
+			line += "\n最后活动：" + s.LastActivity.In(db.ChinaLoc).Format("01-02 15:04")
+		}
+		text = "📱 <b>清理指定设备</b>\n\n" + line +
+			"\n\n❓ 确认清理该设备吗？\n清理后这台设备需要重新登录（正在播放的会中断）。"
+	} else {
+		text = devicesText(sessions, maxSessions) +
+			fmt.Sprintf("\n\n❓ 确认要清理全部 <b>%d</b> 台设备吗？\n清理后这些设备都需要重新登录（正在播放的会中断）。", len(sessions))
+	}
 	rows := [][]KeyboardButton{
 		{
-			{Text: "✅ 确认清理", Data: BuildCallbackData(DKAccount, "devices", "clearok")},
+			{Text: "✅ 确认清理", Data: BuildCallbackData(DKAccount, "devices", "clearok", itoa(idx))},
 			{Text: "❌ 取消", Data: BuildCallbackData(DKAccount, "devices")},
 		},
 	}
 	sendPanel(ctx, deps, cq.ChatID, messageIDOf(cq), text, rows)
 }
 
-// cmdAccountDevicesClear 真正执行清理，然后回到设备列表。
-func cmdAccountDevicesClear(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery) {
+// cmdAccountDevicesClear 真正执行清理，然后回到设备列表。idx>0 清理指定设备，idx=0 清理全部。
+func cmdAccountDevicesClear(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, idx int) {
 	u, err := ensureUser(ctx, deps, cq.From)
 	if err != nil {
 		sendText(ctx, deps, cq.ChatID, "查询失败，请稍后再试。")
@@ -454,6 +489,31 @@ func cmdAccountDevicesClear(ctx context.Context, deps *HandlerDeps, cq *Callback
 	}
 	if u.JellyfinUserID == "" || deps.JF == nil {
 		sendText(ctx, deps, cq.ChatID, "当前无法清理登录设备，请稍后再试。")
+		return
+	}
+	if idx > 0 {
+		sessions, err := deps.JF.ListUserSessions(ctx, u.JellyfinUserID)
+		if err != nil {
+			sendText(ctx, deps, cq.ChatID, "读取登录设备失败，请稍后再试。")
+			return
+		}
+		if idx > len(sessions) {
+			sendText(ctx, deps, cq.ChatID, "未找到该设备，请刷新后重试。")
+			return
+		}
+		s := sessions[idx-1]
+		if err := deps.JF.DeleteDevice(ctx, s.DeviceID); err != nil {
+			sendText(ctx, deps, cq.ChatID, "清理该设备失败："+err.Error())
+			return
+		}
+		name := strings.TrimSpace(s.DeviceName)
+		if name == "" {
+			name = "未知设备"
+		}
+		_ = db.WriteAudit(deps.DB, cq.From.ID, "user_logout_devices", "user",
+			itoa(int(u.TelegramID)), fmt.Sprintf("自助清理登录设备：%s", name))
+		sendText(ctx, deps, cq.ChatID, fmt.Sprintf("✅ 已清理设备「%s」，现在可以重新登录了。", name))
+		cmdAccountDevices(ctx, deps, cq)
 		return
 	}
 	n, err := deps.JF.LogoutAllDevices(ctx, u.JellyfinUserID)

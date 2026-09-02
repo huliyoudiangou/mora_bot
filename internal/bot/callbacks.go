@@ -126,11 +126,15 @@ func handleAccountAction(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 		if len(args) > 0 {
 			sub = args[0]
 		}
+		idx := 0
+		if len(args) > 1 {
+			idx = int(parseInt64Safe(args[1]))
+		}
 		switch sub {
 		case "clear":
-			cmdAccountDevicesConfirm(ctx, deps, cq)
+			cmdAccountDevicesConfirm(ctx, deps, cq, idx)
 		case "clearok":
-			cmdAccountDevicesClear(ctx, deps, cq)
+			cmdAccountDevicesClear(ctx, deps, cq, idx)
 		default:
 			cmdAccountDevices(ctx, deps, cq)
 		}
