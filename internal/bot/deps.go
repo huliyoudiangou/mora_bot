@@ -122,12 +122,19 @@ func (l *UserLocker) WithUser(userID int64, fn func()) {
 }
 
 // GC 清理长期未用的锁条目。
-func (l *UserLocker) GC(_ time.Time) {
+// 注意：不能直接重建整个表，否则正在等待/持锁的 goroutine 会拿到旧锁指针，
+// 而后来的同用户请求拿到新锁，导致同用户并发互斥失效。
+func (l *UserLocker) GC(now time.Time) {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
-	// 锁表很小，直接重建惰性表即可；活跃锁由 WithUser 懒加载。
-	l.locks = make(map[int64]*sync.Mutex)
-	l.mu.Unlock()
+	defer l.mu.Unlock()
+	for id, m := range l.locks {
+		// 只在锁空闲时删除；使用 TryLock 判断是否有人持有或等待。
+		if m.TryLock() {
+			m.Unlock()
+			delete(l.locks, id)
+		}
+	}
 }

@@ -86,7 +86,10 @@ func main() {
 		SuperAdminIDs: cfg.SuperAdminTgIDs,
 	}
 
-	tg, err := tgbotapi.New(cfg.TgBotToken)
+	tg, err := tgbotapi.New(cfg.TgBotToken,
+		tgbotapi.WithWorkers(cfg.WorkerCount),
+		tgbotapi.WithUpdatesChannelCap(cfg.QueueCapacity),
+	)
 	if err != nil {
 		lg.Error("TG bot 创建失败", "err", err)
 		os.Exit(1)

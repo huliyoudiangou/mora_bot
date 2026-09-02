@@ -66,7 +66,7 @@ func (r *Router) cmdAccountPwd(ctx context.Context, msg *Message, _ []string) {
 		return
 	}
 	deps.Sessions.Begin(msg.From.ID, sessPwdChange)
-	sendText(ctx, deps, msg.ChatID, "🔑 修改密码 · 第 1/3 步\n请输入你的<b>安全码</b>：\n\n回复 /cancel 可取消。")
+	sendHTML(ctx, deps, msg.ChatID, "🔑 修改密码 · 第 1/3 步\n请输入你的<b>安全码</b>：\n\n回复 /cancel 可取消。")
 }
 
 // handlePwdChangeStep 修改密码向导：安全码 → 旧密码 → 新密码。
@@ -96,7 +96,7 @@ func (r *Router) handlePwdChangeStep(ctx context.Context, msg *Message) {
 		}
 		s2 := deps.Sessions.Advance(msg.From.ID, nil)
 		s2.Step = 1
-		sendText(ctx, deps, msg.ChatID, "🔑 第 2/3 步\n请输入你的<b>旧密码</b>：\n\n回复 /cancel 可取消。")
+		sendHTML(ctx, deps, msg.ChatID, "🔑 第 2/3 步\n请输入你的<b>旧密码</b>：\n\n回复 /cancel 可取消。")
 	case 1: // 旧密码
 		oldPw := strings.TrimSpace(msg.Text)
 		if oldPw == "" {
@@ -127,7 +127,7 @@ func (r *Router) handlePwdChangeStep(ctx context.Context, msg *Message) {
 		}
 		s2 := deps.Sessions.Advance(msg.From.ID, map[string]any{"old_pw": oldPw})
 		s2.Step = 2
-		sendText(ctx, deps, msg.ChatID, "🔑 第 3/3 步\n请输入你的<b>新密码</b>（至少 6 位）：\n\n回复 /cancel 可取消。")
+		sendHTML(ctx, deps, msg.ChatID, "🔑 第 3/3 步\n请输入你的<b>新密码</b>（至少 6 位）：\n\n回复 /cancel 可取消。")
 	case 2: // 新密码
 		newPw := strings.TrimSpace(msg.Text)
 		if len(newPw) < 6 {
@@ -157,7 +157,7 @@ func (r *Router) cmdAccountSecurity(ctx context.Context, msg *Message, _ []strin
 		return
 	}
 	deps.Sessions.Begin(msg.From.ID, sessSetSecurity)
-	sendText(ctx, deps, msg.ChatID, "🔐 设置安全码 · 第 1/2 步\n请设置你的<b>安全码</b>（4-20 位字母/数字，用于改密/解绑校验）：\n\n回复 /cancel 可取消。")
+	sendHTML(ctx, deps, msg.ChatID, "🔐 设置安全码 · 第 1/2 步\n请设置你的<b>安全码</b>（4-20 位字母/数字，用于改密/解绑校验）：\n\n回复 /cancel 可取消。")
 }
 
 // handleSetSecurityStep 设置安全码向导：新码 → 确认。
@@ -181,7 +181,7 @@ func (r *Router) handleSetSecurityStep(ctx context.Context, msg *Message) {
 		}
 		s2 := deps.Sessions.Advance(msg.From.ID, map[string]any{"new_code": code})
 		s2.Step = 1
-		sendText(ctx, deps, msg.ChatID, "🔐 第 2/2 步\n请<b>再次输入</b>安全码确认：\n\n回复 /cancel 可取消。")
+		sendHTML(ctx, deps, msg.ChatID, "🔐 第 2/2 步\n请<b>再次输入</b>安全码确认：\n\n回复 /cancel 可取消。")
 	case 1: // 确认
 		code, _ := sess.Data["new_code"].(string)
 		if strings.TrimSpace(msg.Text) != code {
@@ -256,7 +256,7 @@ func (r *Router) handleUnbindStep(ctx context.Context, msg *Message) {
 			"✅ 安全码验证通过。\n请发送 <b>CONFIRM</b> 确认解绑（解绑后当前 Jellyfin 账号将不再关联，但订阅保留，可换绑）。")
 	case 1: // CONFIRM
 		if !strings.EqualFold(strings.TrimSpace(msg.Text), "CONFIRM") {
-			sendText(ctx, deps, msg.ChatID, "请发送 <b>CONFIRM</b> 确认解绑，或 /cancel 放弃。")
+			sendHTML(ctx, deps, msg.ChatID, "请发送 <b>CONFIRM</b> 确认解绑，或 /cancel 放弃。")
 			return
 		}
 		deps.Sessions.Clear(msg.From.ID)

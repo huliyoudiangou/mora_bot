@@ -40,7 +40,7 @@ func (r *Router) handleAdminAdjPointsStep(ctx context.Context, msg *Message) {
 		}
 		s2 := deps.Sessions.Advance(msg.From.ID, map[string]any{"tg_id": tgID})
 		s2.Step = 1
-		sendText(ctx, deps, msg.ChatID, "请输入积分变动值（正数加、负数减，例如 <b>100</b> 或 <b>-50</b>）：")
+		sendHTML(ctx, deps, msg.ChatID, "请输入积分变动值（正数加、负数减，例如 <b>100</b> 或 <b>-50</b>）：")
 		return
 	}
 	// step 1: delta

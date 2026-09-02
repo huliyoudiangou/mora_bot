@@ -83,7 +83,7 @@ func handleMenuAction(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery,
 	case "redeem":
 		// 开始「使用续期码」会话：下一步收卡密
 		deps.Sessions.Begin(cq.From.ID, sessRedeem)
-		sendText(ctx, deps, cq.ChatID, "🎟 使用续期码\n请直接发送你的续期码（如 <code>R30-A1B2C3D4E5F6G7H8J9K2</code>）。\n\n回复 /cancel 可取消。")
+		sendHTML(ctx, deps, cq.ChatID, "🎟 使用续期码\n请直接发送你的续期码（如 <code>R30-A1B2C3D4E5F6G7H8J9K2</code>）。\n\n回复 /cancel 可取消。")
 	case "lines":
 		// 用户面板「查询线路」：列出可用 Jellyfin 线路
 		sendLineList(ctx, deps, cq.ChatID)
@@ -159,20 +159,20 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 	case "gencode":
 		// 面板「生成邀请码」：向导第一步收数量
 		deps.Sessions.Begin(cq.From.ID, sessAdminGenInvite)
-		sendText(ctx, deps, cq.ChatID, "🎟 生成邀请码\n请输入要生成的<b>数量</b>（1-200），例如：<code>10</code>\n\n回复 /cancel 可取消。")
+		sendHTML(ctx, deps, cq.ChatID, "🎟 生成邀请码\n请输入要生成的<b>数量</b>（1-200），例如：<code>10</code>\n\n回复 /cancel 可取消。")
 	case "genrenew":
 		// 面板「生成续期码」：向导第一步先收天数
 		deps.Sessions.Begin(cq.From.ID, sessAdminGenRenew)
-		sendText(ctx, deps, cq.ChatID, "⏳ 生成续期码 · 第 1 步\n请输入<b>续期天数</b>（1-3650），例如：<code>30</code>\n\n回复 /cancel 可取消。")
+		sendHTML(ctx, deps, cq.ChatID, "⏳ 生成续期码 · 第 1 步\n请输入<b>续期天数</b>（1-3650），例如：<code>30</code>\n\n回复 /cancel 可取消。")
 	case "qcode":
 		deps.Sessions.Begin(cq.From.ID, sessAdminQueryCode)
-		sendText(ctx, deps, cq.ChatID, "🔍 查询卡密\n请输入要查询的<b>邀请码或续期码</b>（原样粘贴）：\n\n回复 /cancel 可取消。")
+		sendHTML(ctx, deps, cq.ChatID, "🔍 查询卡密\n请输入要查询的<b>邀请码或续期码</b>（原样粘贴）：\n\n回复 /cancel 可取消。")
 	case "adjpoints":
 		deps.Sessions.Begin(cq.From.ID, sessAdminAdjPoints)
-		sendText(ctx, deps, cq.ChatID, "🪙 调整积分 · 第 1 步\n请输入目标用户的 <b>tg_id</b>：\n\n回复 /cancel 可取消。")
+		sendHTML(ctx, deps, cq.ChatID, "🪙 调整积分 · 第 1 步\n请输入目标用户的 <b>tg_id</b>：\n\n回复 /cancel 可取消。")
 	case "quser":
 		deps.Sessions.Begin(cq.From.ID, sessAdminQueryUser)
-		sendText(ctx, deps, cq.ChatID, "👤 查询用户\n请输入要查询的用户的 <b>tg_id</b>：\n\n回复 /cancel 可取消。")
+		sendHTML(ctx, deps, cq.ChatID, "👤 查询用户\n请输入要查询的用户的 <b>tg_id</b>：\n\n回复 /cancel 可取消。")
 	case "whitelist":
 		// 主面板入口：admin:whitelist → 打开白名单子面板
 		sendAdminSub(ctx, deps, cq, "whitelist")
@@ -185,11 +185,11 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 		case args[0] == "add":
 			deps.Sessions.Begin(cq.From.ID, sessAdminWL)
 			deps.Sessions.Advance(cq.From.ID, map[string]any{"mode": "add"})
-			sendText(ctx, deps, cq.ChatID, "➕ 添加白名单\n请输入用户的 <b>tg_id</b>（将永久有效、不受规则约束、无需保号）：\n\n回复 /cancel 可取消。")
+			sendHTML(ctx, deps, cq.ChatID, "➕ 添加白名单\n请输入用户的 <b>tg_id</b>（将永久有效、不受规则约束、无需保号）：\n\n回复 /cancel 可取消。")
 		case args[0] == "del":
 			deps.Sessions.Begin(cq.From.ID, sessAdminWL)
 			deps.Sessions.Advance(cq.From.ID, map[string]any{"mode": "del"})
-			sendText(ctx, deps, cq.ChatID, "➖ 移除白名单\n请输入用户的 <b>tg_id</b>（将恢复受规则约束）：\n\n回复 /cancel 可取消。")
+			sendHTML(ctx, deps, cq.ChatID, "➖ 移除白名单\n请输入用户的 <b>tg_id</b>（将恢复受规则约束）：\n\n回复 /cancel 可取消。")
 		case args[0] == "list":
 			handleAdminWLList(ctx, deps, cq)
 		}
@@ -204,11 +204,11 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 		case args[0] == "invite":
 			deps.Sessions.Begin(cq.From.ID, sessAdminPrice)
 			deps.Sessions.Advance(cq.From.ID, map[string]any{"kind": "invite"})
-			sendText(ctx, deps, cq.ChatID, "🎫 设置邀请码积分价\n请输入每张邀请码所需 <b>积分</b>（0=禁止兑换），例如：<code>300</code>\n\n回复 /cancel 可取消。")
+			sendHTML(ctx, deps, cq.ChatID, "🎫 设置邀请码积分价\n请输入每张邀请码所需 <b>积分</b>（0=禁止兑换），例如：<code>300</code>\n\n回复 /cancel 可取消。")
 		case args[0] == "renewal":
 			deps.Sessions.Begin(cq.From.ID, sessAdminPrice)
 			deps.Sessions.Advance(cq.From.ID, map[string]any{"kind": "renewal"})
-			sendText(ctx, deps, cq.ChatID, "💳 设置续期码积分价\n请输入每张续期码所需 <b>积分</b>（0=禁止兑换），例如：<code>150</code>\n\n回复 /cancel 可取消。")
+			sendHTML(ctx, deps, cq.ChatID, "💳 设置续期码积分价\n请输入每张续期码所需 <b>积分</b>（0=禁止兑换），例如：<code>150</code>\n\n回复 /cancel 可取消。")
 		}
 	case "lines":
 		// 实际回调 admin:lines:list / admin:lines:add / admin:lines:del
@@ -219,10 +219,10 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 			sendLineList(ctx, deps, cq.ChatID)
 		case args[0] == "add":
 			deps.Sessions.Begin(cq.From.ID, sessAdminLineAdd)
-			sendText(ctx, deps, cq.ChatID, "➕ 添加 Jellyfin 线路\n请输入线路地址（http/https），格式：<code>https://jf.example.com</code>\n如需名称：<code>主线路 https://jf.example.com</code> 或 <code>主线路|https://jf.example.com</code>\n\n回复 /cancel 可取消。")
+			sendHTML(ctx, deps, cq.ChatID, "➕ 添加 Jellyfin 线路\n请输入线路地址（http/https），格式：<code>https://jf.example.com</code>\n如需名称：<code>主线路 https://jf.example.com</code> 或 <code>主线路|https://jf.example.com</code>\n\n回复 /cancel 可取消。")
 		case args[0] == "del":
 			deps.Sessions.Begin(cq.From.ID, sessAdminLineDel)
-			sendText(ctx, deps, cq.ChatID, "🗑 删除 Jellyfin 线路\n请输入线路 <b>编号</b>（/admin lines:list 查看）或完整 URL：\n\n回复 /cancel 可取消。")
+			sendHTML(ctx, deps, cq.ChatID, "🗑 删除 Jellyfin 线路\n请输入线路 <b>编号</b>（/admin lines:list 查看）或完整 URL：\n\n回复 /cancel 可取消。")
 		}
 	case "reg":
 		// 实际回调 admin:reg:open / admin:reg:regquota / admin:reg:exchange / admin:reg:quota
@@ -249,7 +249,7 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 			sendAdminSub(ctx, deps, cq, "reg")
 		case args[0] == "quota":
 			deps.Sessions.Begin(cq.From.ID, sessAdminQuota)
-			sendText(ctx, deps, cq.ChatID, "🎟 设置积分兑换邀请码配额\n请输入允许兑换的邀请码<b>总数</b>（0=不限），例如：<code>10</code>\n\n回复 /cancel 可取消。")
+			sendHTML(ctx, deps, cq.ChatID, "🎟 设置积分兑换邀请码配额\n请输入允许兑换的邀请码<b>总数</b>（0=不限），例如：<code>10</code>\n\n回复 /cancel 可取消。")
 		}
 	case "user":
 		// admin:user:disable:1001 等（兼容旧回调）
@@ -357,7 +357,7 @@ func handleDramaCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 		// 开启会话：要求发送红果短剧分享链接（无链接则补剧名+主演名）
 		ack("", false)
 		deps.Sessions.Begin(cq.From.ID, sessDramaFeedback)
-		sendText(ctx, deps, cq.ChatID, "🎬 求剧 · 第 1 步\n请发送 <b>红果短剧分享链接</b>（App 内「分享 → 复制链接」粘贴过来）。\n\n如果没有链接，请直接发送：剧名 主演名\n（例如：双面人生 / 杨幂）\n\n回复 /cancel 可取消。")
+		sendHTML(ctx, deps, cq.ChatID, "🎬 求剧 · 第 1 步\n请发送 <b>红果短剧分享链接</b>（App 内「分享 → 复制链接」粘贴过来）。\n\n如果没有链接，请直接发送：剧名 主演名\n（例如：双面人生 / 杨幂）\n\n回复 /cancel 可取消。")
 	case "list":
 		ack("", false)
 		(&Router{deps: deps}).cmdListDrama(ctx, m)

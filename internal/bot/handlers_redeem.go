@@ -33,13 +33,13 @@ func (r *Router) cmdRedeem(ctx context.Context, msg *Message, args []string) {
 		sendText(ctx, deps, msg.ChatID, redeemErrText(err))
 		return
 	}
-	expireText := "永久"
-	if newExpire != nil {
-		expireText = newExpire.Format("2006-01-02")
+	if newExpire == nil {
+		sendText(ctx, deps, msg.ChatID, "✅ 续期码已核销（白名单/永久账号无需叠加天数）。")
+		return
 	}
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
 		"✅ 续期成功！\n新增 %d 天，当前有效期至 <b>%s</b>",
-		days, expireText))
+		days, newExpire.Format("2006-01-02")))
 }
 
 // handleRedeemStep 面板「使用续期码」会话：收卡密并核销（复用 /redeem 核心逻辑）。
@@ -78,13 +78,13 @@ func (r *Router) handleRedeemStep(ctx context.Context, msg *Message) {
 		return
 	}
 	deps.Sessions.Clear(msg.From.ID)
-	expireText := "永久"
-	if newExpire != nil {
-		expireText = newExpire.Format("2006-01-02")
+	if newExpire == nil {
+		sendText(ctx, deps, msg.ChatID, "✅ 续期码已核销（白名单/永久账号无需叠加天数）。")
+		return
 	}
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
 		"✅ 续期成功！\n新增 %d 天，当前有效期至 <b>%s</b>",
-		days, expireText))
+		days, newExpire.Format("2006-01-02")))
 }
 
 // redeemErrText 核销失败文案。
