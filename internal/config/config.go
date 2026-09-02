@@ -217,9 +217,11 @@ func loadEnvFile(path string) error {
 			continue
 		}
 		key := strings.TrimSpace(line[:eq])
+		key = strings.TrimPrefix(key, "export")
+		key = strings.TrimSpace(key)
 		val := strings.TrimSpace(line[eq+1:])
 		val = strings.Trim(val, `"'`)
-		if os.Getenv(key) == "" {
+		if key != "" && os.Getenv(key) == "" {
 			_ = os.Setenv(key, val)
 		}
 	}
