@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"gorm.io/gorm"
 
@@ -11,6 +12,10 @@ import (
 )
 
 var errQuotaExceeded = errors.New("邀请码兑换名额已满")
+
+// exchangeQuotaMu 串行化全局积分兑换邀请码名额检查+创建，防止多用户同时通过
+// Count 校验后都插入导致超配额。
+var exchangeQuotaMu sync.Mutex
 
 const (
 	defaultShopPrice     = 100
@@ -137,9 +142,10 @@ func (r *Router) cmdShopBuyInvite(ctx context.Context, msg *Message) {
 
 	var plain string
 	var ve error
+	exchangeQuotaMu.Lock()
 	deps.Lockers.WithUser(msg.From.ID, func() {
 		ve = deps.DB.Transaction(func(tx *gorm.DB) error {
-			// 0) 配额再校验（并发安全：事务内统计）
+			// 0) 配额再校验（全局互斥下核减，防多用户并发超发）
 			if q := exchangeInviteQuota(deps); q > 0 {
 				var used int64
 				tx.Model(&db.InviteCode{}).Where("source = ?", "exchange").Count(&used)
@@ -176,6 +182,7 @@ func (r *Router) cmdShopBuyInvite(ctx context.Context, msg *Message) {
 			return nil
 		})
 	})
+	exchangeQuotaMu.Unlock()
 	if ve != nil {
 		if ve == errQuotaExceeded {
 			sendText(ctx, deps, msg.ChatID, "积分兑换邀请码名额已满（管理员设置了配额）。")
