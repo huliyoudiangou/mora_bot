@@ -322,11 +322,13 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 	// 全局串行化检查+写入，避免两个 TG 并发绑定同一 JF 账号都通过检查。
 	bindMu.Lock()
 	defer bindMu.Unlock()
-	// 防止同一 Jellyfin 账号被多个 Telegram 用户绑定。
-	if existing, err := db.FindUserByJellyfinID(deps.DB, ju.ID); err == nil && existing != nil && existing.TelegramID != msg.From.ID {
+	// 防止同一 Jellyfin 账号被多个 Telegram 用户绑定（含历史重复数据）。
+	var bound db.User
+	err = deps.DB.Where("jellyfin_user_id = ? AND telegram_id <> ?", ju.ID, msg.From.ID).First(&bound).Error
+	if err == nil {
 		sendText(ctx, deps, msg.ChatID, "该 Jellyfin 账号已被其他 Telegram 用户绑定，如需使用请先由对方解绑。")
 		return
-	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		sendText(ctx, deps, msg.ChatID, "查询绑定关系失败："+err.Error())
 		return
 	}
