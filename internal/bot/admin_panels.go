@@ -63,23 +63,25 @@ func configGetInt(deps *HandlerDeps, key string, def int) int {
 	return v
 }
 
-// inviteCodePrice 邀请码当前积分价（数据库配置优先，回退环境变量）。
+// inviteCodePrice 邀请码当前积分价（库配置优先，其次 env 接线值，最后常量兜底）。
+// deps 值可为 0：env 显式 PRICE_INVITE_CODE=0 表示"禁止兑换"，必须原样透传给
+// 商店的 price<=0 守卫，不得被常量兜底复活。
 func inviteCodePrice(deps *HandlerDeps) int {
 	if p := configGetInt(deps, cfgKeyInvitePrice, -1); p >= 0 {
 		return p
 	}
-	if deps != nil && deps.PriceInviteCode > 0 {
+	if deps != nil {
 		return deps.PriceInviteCode
 	}
 	return defaultInvitePrice
 }
 
-// renewalCodePrice 续期码当前积分价（数据库配置优先，回退环境变量）。
+// renewalCodePrice 续期码当前积分价（回退链同 inviteCodePrice，0=禁止兑换透传）。
 func renewalCodePrice(deps *HandlerDeps) int {
 	if p := configGetInt(deps, cfgKeyRenewalPrice, -1); p >= 0 {
 		return p
 	}
-	if deps != nil && deps.RenewalPrice > 0 {
+	if deps != nil {
 		return deps.RenewalPrice
 	}
 	return defaultShopPrice

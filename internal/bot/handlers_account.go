@@ -257,6 +257,12 @@ func (r *Router) cmdAccountSecurity(ctx context.Context, msg *Message, _ []strin
 		sendText(ctx, deps, msg.ChatID, "你已经设置过安全码。如需修改，请联系管理员重置。")
 		return
 	}
+	// Pepper 未配置时哈希会以"空密钥"计算：HKDF 接受空输入，不会报错——
+	// 若放行，安全码将以可公开推导的密钥落库（等效明文），且配置 pepper 后该用户永久无法通过校验。
+	if deps.Pepper == "" {
+		sendText(ctx, deps, msg.ChatID, "管理员未配置 SECURITY_PEPPER，安全码功能暂不可用。")
+		return
+	}
 	deps.Sessions.Begin(msg.From.ID, sessSetSecurity)
 	sendHTML(ctx, deps, msg.ChatID, "🔐 设置安全码 · 第 1/2 步\n请设置你的<b>安全码</b>（4-20 位字母/数字，用于改密/解绑校验）：\n\n回复 /cancel 可取消。")
 }
@@ -288,6 +294,12 @@ func (r *Router) handleSetSecurityStep(ctx context.Context, msg *Message) {
 		if strings.TrimSpace(msg.Text) != code {
 			sendText(ctx, deps, msg.ChatID, "两次输入不一致，请重新点「🔐 设置安全码」再来。")
 			deps.Sessions.Clear(msg.From.ID)
+			return
+		}
+		// 纵深：向导期间 pepper 被移除（或入口守卫被绕过）时的兜底，见 cmdAccountSecurity 注释。
+		if deps.Pepper == "" {
+			deps.Sessions.Clear(msg.From.ID)
+			sendText(ctx, deps, msg.ChatID, "管理员未配置 SECURITY_PEPPER，安全码功能暂不可用。")
 			return
 		}
 		hash, err := codes.HashSecurityCode(code, deps.Pepper)

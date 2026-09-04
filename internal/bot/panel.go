@@ -61,13 +61,17 @@ func shopPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 	} else if r := exchangeInviteRemaining(deps); r >= 0 {
 		invLine = fmt.Sprintf("• 邀请码：%d 果果币（剩余名额 %d）", invPrice, r)
 	}
+	renewLine := fmt.Sprintf("• 续期码：%d 果果币 / %d 天", price, days)
+	if price <= 0 {
+		renewLine = "• 续期码：暂未开放"
+	}
 	text := fmt.Sprintf(
 		"🛒 <b>果果币商店</b>\n\n"+
 			"当前余额：🪙 %d\n\n"+
-			"• 续期码：%d 果果币 / %d 天\n"+
+			"%s\n"+
 			"%s\n\n"+
 			"购买后获得卡密码，用于续期或邀请新用户。",
-		u.GuoGuo, price, days, invLine)
+		u.GuoGuo, renewLine, invLine)
 	rows := [][]KeyboardButton{
 		{
 			{Text: "💳 购买续期码", Data: BuildCallbackData(DKShop, "buy")},

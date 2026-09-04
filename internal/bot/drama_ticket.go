@@ -96,6 +96,15 @@ func titleStripped(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// truncateRunes 按 rune 截断。旧的 s[:n] 字节截断会把多字节字符切成非法 UTF-8，
+// 入库/发给 Telegram 后变成乱码（Go json 序列化为 U+FFFD）。
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
+}
+
 // createDramaTicket 创建求剧工单并通知管理员。
 // 返回创建成功的工单；ok=false 表示失败或已超限（已发提示）。
 func createDramaTicket(ctx context.Context, deps *HandlerDeps, msg *Message, title, link, actor string) (*db.DramaRequest, bool) {
@@ -114,15 +123,9 @@ func createDramaTicket(ctx context.Context, deps *HandlerDeps, msg *Message, tit
 	if t == "" {
 		t = "（未提供剧名）"
 	}
-	if len(t) > 200 {
-		t = t[:200]
-	}
-	if len(link) > 512 {
-		link = link[:512]
-	}
-	if len(actor) > 200 {
-		actor = actor[:200]
-	}
+	t = truncateRunes(t, 200)
+	link = truncateRunes(link, 512)
+	actor = truncateRunes(actor, 200)
 	// 主演并入备注（保留用户原始追问内容）
 	note := actor
 
@@ -145,7 +148,8 @@ func createDramaTicket(ctx context.Context, deps *HandlerDeps, msg *Message, tit
 	return &req, true
 }
 
-// notifyAdminsDrama 新工单私聊推送所有管理员（含链接与操作按钮）。
+// notifyAdminsDrama 新工单私聊推送所有管理员（含链接与操作按钮），
+// 配置了 NOTICE_GROUP_ID 时同步推送通知群。
 func notifyAdminsDrama(ctx context.Context, deps *HandlerDeps, req *db.DramaRequest, u *db.User) {
 	if deps == nil || deps.Snd == nil || req == nil {
 		return
@@ -153,6 +157,11 @@ func notifyAdminsDrama(ctx context.Context, deps *HandlerDeps, req *db.DramaRequ
 	for _, id := range deps.SuperAdminIDs {
 		// 管理员本人发的工单也提醒，方便测试与跟踪
 		_ = deps.Snd.SendKeyboard(ctx, id, dramaAdminCard(req, u, ""), dramaAdminRows(req, true))
+	}
+	if deps.NoticeGroupID != 0 {
+		// 群内只发文本卡片、不带按钮：群内回调已被"仅私聊"策略拒绝，按钮无意义；
+		// 文本卡的链接（如有）仍可点击查看。
+		sendHTML(ctx, deps, deps.NoticeGroupID, dramaAdminCard(req, u, ""))
 	}
 }
 

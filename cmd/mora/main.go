@@ -85,6 +85,7 @@ func main() {
 			return superSet[tgID]
 		},
 		SuperAdminIDs: cfg.SuperAdminTgIDs,
+		NoticeGroupID: cfg.NoticeGroupID,
 	}
 
 	tg, err := tgbotapi.New(cfg.TgBotToken,

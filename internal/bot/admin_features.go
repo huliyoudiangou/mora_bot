@@ -338,6 +338,16 @@ func (r *Router) handleAdminLineAddStep(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "线路地址必须是 http(s):// 开头的完整 URL。")
 		return
 	}
+	// 长度上限：与 JellyfinLine 列宽（name 64 / url 256）对齐；
+	// 无上限的超长输入会让用户侧「查询线路」消息超过 Telegram 4096 整条拒发。
+	if n := len([]rune(name)); n > 64 {
+		sendText(ctx, deps, msg.ChatID, fmt.Sprintf("线路名称过长（%d 字，上限 64）。", n))
+		return
+	}
+	if n := len([]rune(lineURL)); n > 256 {
+		sendText(ctx, deps, msg.ChatID, fmt.Sprintf("线路地址过长（%d 字符，上限 256）。", n))
+		return
+	}
 	row := db.JellyfinLine{Name: name, URL: lineURL, Order: 0}
 	if err := deps.DB.Create(&row).Error; err != nil {
 		if isUniqueViolation(err, "url") {
@@ -367,6 +377,11 @@ func (r *Router) handleAdminLineDelStep(ctx context.Context, msg *Message) {
 	raw := strings.TrimSpace(msg.Text)
 	if raw == "" {
 		sendText(ctx, deps, msg.ChatID, "请输入线路编号或 URL。")
+		return
+	}
+	// 删除时会原样回显输入：超长输入的回显会超过 Telegram 4096 整条拒发。
+	if len([]rune(raw)) > 300 {
+		sendText(ctx, deps, msg.ChatID, "输入过长，请输入线路编号（数字）或完整 URL。")
 		return
 	}
 	var id uint

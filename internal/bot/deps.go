@@ -57,6 +57,8 @@ type HandlerDeps struct {
 	IsSuper func(tgID int64) bool
 	// SuperAdminIDs 管理员 ID 列表（用于新工单等私聊通知）。
 	SuperAdminIDs []int64
+	// NoticeGroupID 求剧新工单的通知群/频道 ID（NOTICE_GROUP_ID，0=只私聊管理员）。
+	NoticeGroupID int64
 }
 
 // TGUser Telegram 用户最小视图。

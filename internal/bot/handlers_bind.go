@@ -157,6 +157,13 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "安全码处理失败，请重试。")
 		return
 	}
+	// Pepper 未配置时哈希以"空密钥"落库（HKDF 接受空输入），配置后永久失配：
+	// 未配置时直接拒绝完成注册，避免产生此类档案。
+	if deps.Pepper == "" {
+		deps.Sessions.Clear(msg.From.ID)
+		sendText(ctx, deps, msg.ChatID, "管理员未配置 SECURITY_PEPPER，暂无法完成注册，请联系管理员。")
+		return
+	}
 	uName, _ := sess.Data["username"].(string)
 	pwd, _ := sess.Data["pwd"].(string)
 	// 开注模式（无邀请码）：先占用一个开注名额（设有名额时），防止超发
