@@ -34,6 +34,12 @@ type secCodeGuard struct {
 
 var secGuard = &secCodeGuard{state: map[int64]*secAttempt{}}
 
+// bindGuard 绑定流程密码验证失败限制：
+// /bind 用 AuthenticateByName 自证密码，若不设上限，任意 TG 用户都能把 bot
+// 当作对任意 Jellyfin 账号的在线密码爆破代理。与安全码同一阈值：连续失败
+// 5 次锁定 15 分钟（AuthBlocked 是"密码可能正确但被拒登"，不计失败）。
+var bindGuard = &secCodeGuard{state: map[int64]*secAttempt{}}
+
 // allowed 返回当前是否允许尝试；被锁定时返回剩余等待时长。
 func (g *secCodeGuard) allowed(userID int64) (bool, time.Duration) {
 	g.mu.Lock()
@@ -83,7 +89,10 @@ func (g *secCodeGuard) GC(now time.Time) {
 }
 
 // GCSecurityGuard 包级 GC 入口（供 main 的周期任务调用）。
-func GCSecurityGuard(now time.Time) { secGuard.GC(now) }
+func GCSecurityGuard(now time.Time) {
+	secGuard.GC(now)
+	bindGuard.GC(now)
+}
 
 // verifySecurityCode 安全码统一校验入口：
 // 先查锁定状态，再比对 HMAC；失败计数、成功清零。

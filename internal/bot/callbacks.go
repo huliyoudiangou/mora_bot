@@ -450,7 +450,13 @@ func handleDramaCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 				req.ID, escapeHTML(req.Title)))
 		}
 	case "next":
-		// 取下一条待处理工单，发送操作卡片；没有则提示
+		// 取下一条待处理工单，发送操作卡片；没有则提示。
+		// 语义是管理员操作（卡片含他人工单内容），必须与 claim/resolve/reject 同级校验：
+		// 否则拿到旧通知卡片（如被转发）的普通用户可遍历全部待处理工单。
+		if deps.IsSuper == nil || !deps.IsSuper(cq.From.ID) {
+			ack("无权限", true)
+			return
+		}
 		var req db.DramaRequest
 		if err := deps.DB.Where("status = ?", db.DramaStatusPending).Order("id asc").First(&req).Error; err != nil {
 			ack("没有待处理工单 ✔", false)

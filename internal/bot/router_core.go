@@ -174,6 +174,15 @@ func (r *Router) dispatchCommand(ctx context.Context, cmd string, args []string,
 		r.cmdRedeem(ctx, msg, args)
 	case "/admin":
 		r.cmdAdmin(ctx, msg, args)
+	case "/cancel":
+		// 所有向导提示"回复 /cancel 可取消"：/cancel 以 / 开头必然走命令路径，
+		// 必须在这里清会话，否则各会话 step 里的 isCancelText 分支永远不可达。
+		if r.deps.Sessions != nil && r.deps.Sessions.Current(msg.From.ID) != nil {
+			r.deps.Sessions.Clear(msg.From.ID)
+			sendText(ctx, r.deps, msg.ChatID, "已取消当前操作。")
+		} else {
+			sendText(ctx, r.deps, msg.ChatID, "当前没有进行中的操作。")
+		}
 	default:
 		sendText(ctx, r.deps, msg.ChatID, "未知命令，发 /help 查看可用指令。")
 	}

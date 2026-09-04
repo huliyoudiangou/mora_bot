@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -206,6 +207,8 @@ func backupDatabase(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *tgb
 			_ = os.Remove(tmp)
 			return "", err
 		}
+		// VACUUM INTO 生成的文件默认 0644：收紧为仅属主可读写（数据库含卡密密文/用户档案）。
+		_ = os.Chmod(dst, 0o600)
 	}
 
 	// 修剪旧的（按文件名时间戳排序，保留最新 keepCount 份）
@@ -218,8 +221,9 @@ func backupDatabase(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *tgb
 					continue
 				}
 				name := e.Name()
-				// 只清理本程序生成的备份文件，避免误删目录中其它文件。
-				if !strings.HasSuffix(name, ".db") && !strings.HasSuffix(name, ".db.enc") {
+				// 只清理本程序生成的备份文件（命名格式校验），
+				// 避免把目录中手工放置的其它 .db 文件当备份误删。
+				if !isBackupArtifact(name) {
 					continue
 				}
 				names = append(names, name)
@@ -250,6 +254,14 @@ func backupDatabase(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *tgb
 		}
 	}
 	return filepath.Base(dst), nil
+}
+
+// backupNameRe 本程序生成的备份文件命名：2006-01-02-150405.000.db[.enc]。
+var backupNameRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-\d{6}\.\d{3}\.db(?:\.enc)?$`)
+
+// isBackupArtifact 判断目录里的文件是否为本程序生成的备份（修剪只删这类文件）。
+func isBackupArtifact(name string) bool {
+	return backupNameRe.MatchString(name)
 }
 
 // nextLocalHour 计算本地时区下一个 hour 点整的时间（今天已过则取明天）。

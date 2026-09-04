@@ -91,16 +91,16 @@ func Load() (*Config, error) {
 		JellyfinAPIKey:         env("JELLYFIN_API_KEY", ""),
 		JellyfinTemplateUserID: env("JELLYFIN_TEMPLATE_USER_ID", ""),
 		Brand:                  env("BRAND", "mora"),
-		PriceRenewalCode:       envInt("PRICE_RENEWAL_CODE", 150),
-		DefaultRenewalDays:     envInt("DEFAULT_RENEWAL_DAYS", 30),
-		PriceInviteCode:        envInt("PRICE_INVITE_CODE", 300),
-		NewAccountValidDays:    envInt("NEW_ACCOUNT_VALID_DAYS", 0),
-		NotifyBeforeDays:       envInt("NOTIFY_BEFORE_DAYS", 3),
-		DramaDailyLimit:        envInt("DRAMA_REQUEST_DAILY_LIMIT", 5),
+		PriceRenewalCode:       envIntNonNeg("PRICE_RENEWAL_CODE", 150),
+		DefaultRenewalDays:     envIntNonNeg("DEFAULT_RENEWAL_DAYS", 30),
+		PriceInviteCode:        envIntNonNeg("PRICE_INVITE_CODE", 300),
+		NewAccountValidDays:    envIntNonNeg("NEW_ACCOUNT_VALID_DAYS", 0),
+		NotifyBeforeDays:       envIntNonNeg("NOTIFY_BEFORE_DAYS", 3),
+		DramaDailyLimit:        envIntNonNeg("DRAMA_REQUEST_DAILY_LIMIT", 5),
 		NoticeGroupID:          envInt64("NOTICE_GROUP_ID", 0),
 		StartupNotifyAdmins:    envBool("BOT_STARTUP_NOTIFY_ADMINS", false),
 		BackupDailyHour:        envIntOr("BACKUP_DAILY_HOUR", -1),
-		BackupKeepCount:        envInt("BACKUP_KEEP_COUNT", 7),
+		BackupKeepCount:        envIntNonNeg("BACKUP_KEEP_COUNT", 7),
 		BackupEncryptKey:       env("BACKUP_ENCRYPT_KEY", ""),
 		BackupGroupID:          envInt64("BACKUP_GROUP_ID", 0),
 		WorkerCount:            envInt("WORKER_COUNT", 32),
@@ -111,8 +111,18 @@ func Load() (*Config, error) {
 }
 
 // envInt 读取 int 环境变量（必须为正数，否则用默认值）。
+// 仅用于 0 无意义的字段（连接池/worker 等容量）；
+// 语义为"关闭/不限/禁用"的开关型数值必须用 envIntNonNeg，否则 0 会被静默回退默认值。
 func envInt(k string, def int) int {
 	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(k))); err == nil && v > 0 {
+		return v
+	}
+	return def
+}
+
+// envIntNonNeg 读取非负 int 环境变量（接受 0）：0 常用作"关闭/不限/禁止"语义。
+func envIntNonNeg(k string, def int) int {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(k))); err == nil && v >= 0 {
 		return v
 	}
 	return def

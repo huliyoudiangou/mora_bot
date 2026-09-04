@@ -175,6 +175,13 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 	inviteClaimed := inviteID != 0
 	slotTaken := false
 	if openMode {
+		// 最后一步实时校验开注开关：管理员在会话进行中关闭开注后，
+		// 不允许残留会话（最长 30 分钟）继续免邀请码建号。
+		if !registrationOpen(deps) {
+			deps.Sessions.Clear(msg.From.ID)
+			sendText(ctx, deps, msg.ChatID, "开注已关闭，免邀请码注册已停止。获取邀请码后重新发送 /register。")
+			return
+		}
 		if !consumeOpenRegSlot(ctx, deps) {
 			deps.Sessions.Clear(msg.From.ID)
 			sendText(ctx, deps, msg.ChatID, "❌ 开注名额已用完，本轮注册已自动关闭。如需注册请获取邀请码后重新发送 /register。")
@@ -298,6 +305,12 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "Jellyfin 服务未配置，无法绑定。")
 		return
 	}
+	// 爆破防护：连续失败达上限后临时锁定，防止 bot 被用作对 Jellyfin 账号的在线爆破代理。
+	if ok, remaining := bindGuard.allowed(msg.From.ID); !ok {
+		sendText(ctx, deps, msg.ChatID, fmt.Sprintf(
+			"❌ 绑定尝试次数过多，已临时锁定，请约 %d 分钟后再试。", int(remaining.Minutes())+1))
+		return
+	}
 	// 1. 用户侧自证（Jellyfin 官方认证接口）
 	res, err := deps.JF.AuthenticateByName(ctx, uName, pwd)
 	if err != nil {
@@ -307,6 +320,8 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 	}
 	switch res {
 	case jellyfin.AuthOK:
+		// 凭证正确：清零失败计数
+		bindGuard.reset(msg.From.ID)
 		// 继续下面的关联流程
 	case jellyfin.AuthBlocked:
 		// 密码很可能是对的，只是 Jellyfin 拒绝建立会话。这里**不能**提供"一键清理设备"：
@@ -320,6 +335,7 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 				"处理后再点「🔗 绑定已有账号」重试。")
 		return
 	default: // jellyfin.AuthBadCredentials
+		bindGuard.fail(msg.From.ID)
 		sendText(ctx, deps, msg.ChatID, "用户名或密码错误，绑定失败。")
 		return
 	}

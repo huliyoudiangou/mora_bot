@@ -19,6 +19,9 @@ var (
 	reBracket = regexp.MustCompile(`《([^》]+)》`)
 )
 
+// maxTGButtonURLLen Telegram InlineKeyboardButton 的 URL 字段长度上限（1-256 字符）。
+const maxTGButtonURLLen = 256
+
 // extractURL 从文本中提取第一个 http(s) 链接（去掉尾部标点）。
 func extractURL(s string) string {
 	m := reURL.FindString(s)
@@ -33,6 +36,11 @@ func extractURL(s string) string {
 		return r < 0x21 || r == 0x7f || r == '"' || r == '<' || r == '>' || r == '`'
 	}); i >= 0 {
 		m = m[:i]
+	}
+	// Telegram URL 按钮上限 256 字符：超长链接同样会让整条通知发送失败。
+	// 按字符截断（URL 几乎全为 ASCII；多字节字符不能从字节中间切开）。
+	if r := []rune(m); len(r) > maxTGButtonURLLen {
+		m = string(r[:maxTGButtonURLLen])
 	}
 	return m
 }
