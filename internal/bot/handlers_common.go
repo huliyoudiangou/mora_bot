@@ -95,6 +95,12 @@ func (r *Router) continueSession(ctx context.Context, msg *Message) bool {
 	case sessAdminDramaRej:
 		r.handleAdminDramaRejectStep(ctx, msg)
 		return true
+	case sessAdminLibSessions:
+		r.handleAdminLibSessionsStep(ctx, msg)
+		return true
+	case sessAdminWLLib:
+		r.handleAdminWLLibStep(ctx, msg)
+		return true
 	case sessSetSecurity:
 		r.handleSetSecurityStep(ctx, msg)
 		return true
@@ -145,9 +151,10 @@ var helpText = `
 	🔗 绑定已有账号 — 把已有 Jellyfin 账号关联到本 bot（用户名+密码；连续输错密码 5 次将临时锁定）
 📝 注册新账号 — 开通新 Jellyfin 账号（需邀请码；开注且有名额时免邀请码）
 ⚙️ 账号管理 — 改密/解绑/注销（均需安全码）/登录设备
+📚 我的媒体库 — 查看对你开放的媒体库，可自选从客户端首页隐藏/显示（不影响搜索观看）
 🔐 安全码 — 注册时设置；修改密码、重置密码、解绑、注销需校验（连续输错 5 次将临时锁定）
 🔑 重置密码 — 忘记 Jellyfin 密码时可用安全码重置，每用户最多 2 次
-🛠 管理面板 — 管理员统计与发卡（仅 /admin） 
+🛠 管理面板 — 管理员统计与发卡（仅 /admin）
 `
 
 // ensureAdmin 判定管理员（tg_id 必须与 env 配置的 SUPER_ADMIN_TG_IDS/ADMIN_TELEGRAM_IDS 一致）。

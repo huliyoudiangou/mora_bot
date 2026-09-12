@@ -39,6 +39,7 @@ func mainPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 		},
 		{
 			{Text: "🌐 查询线路", Data: BuildCallbackData(DKMenu, "lines")},
+			{Text: "📚 我的媒体库", Data: BuildCallbackData(DKMenu, "mylibs")},
 		},
 	}
 	// 管理面板只能通过 /admin 调出（用户面板不展示管理入口）

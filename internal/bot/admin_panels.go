@@ -26,6 +26,17 @@ const (
 	cfgKeyExchangeQuota   = "exchange_invite_quota"     // 积分兑换邀请码配额，0=不限
 )
 
+// libDescText 媒体库访问模式的中文描述。
+func libDescText(all bool, n int) string {
+	if all {
+		return "✅ 全部库"
+	}
+	if n <= 0 {
+		return "⚠️ 未开放任何库"
+	}
+	return fmt.Sprintf("📋 指定 %d 个库", n)
+}
+
 // configGet 读 system_configs 文本值；不存在返回默认值。
 func configGet(deps *HandlerDeps, key, def string) string {
 	if deps == nil || deps.DB == nil {
@@ -249,12 +260,14 @@ func registrationAvailable(ctx context.Context, deps *HandlerDeps) bool {
 const defaultInvitePrice = 300
 
 // whitelistPanel 白名单管理子面板：白名单用户不受规则约束、永久有效、无需保号。
+// 库访问/并发上限可单独覆盖（📚 按钮），未设置覆盖的白名单用户跟随模板基线。
 func whitelistPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 	var perms int64
 	deps.DB.Model(&db.User{}).Where("is_permanent = ?", true).Count(&perms)
 	text := fmt.Sprintf(
 		"✅ <b>白名单管理</b>\n\n"+
-			"白名单用户不受规则约束：永久有效、无需保号、不提醒续费。\n\n"+
+			"白名单用户不受规则约束：永久有效、无需保号、不提醒续费。\n"+
+			"库访问/并发上限默认跟随模板基线，可单独覆盖。\n\n"+
 			"当前白名单：%d 人",
 		perms)
 	rows := [][]KeyboardButton{
@@ -264,6 +277,7 @@ func whitelistPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) 
 		},
 		{
 			{Text: "📋 查看白名单", Data: BuildCallbackData(DKAdmin, "wl:list")},
+			{Text: "📚 单独库/并发设置", Data: BuildCallbackData(DKAdmin, "wl:lib")},
 		},
 		{
 			{Text: "↩️ 返回管理面板", Data: BuildCallbackData(DKAdmin, "view")},
@@ -308,6 +322,59 @@ func linesPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 		},
 	}
 	return text, rows
+}
+
+// libPanel 媒体库访问控制子面板（三层模型的管理入口）。
+// 模板基线直接读写 Jellyfin 模板用户 Policy；白名单覆盖在白名单面板单独设置；
+// 用户自选隐藏由用户在自己的「我的媒体库」操作。
+func libPanel(ctx context.Context, deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
+	la := templateLibAccess(ctx, deps)
+	if la == nil {
+		text := "📚 <b>媒体库访问控制</b>\n\n" +
+			"❌ 模板用户未配置或读取失败，无法管理基线。\n" +
+			"请先配置 JELLYFIN_TEMPLATE_USER_ID 并确认模板用户存在。"
+		rows := [][]KeyboardButton{
+			{
+				{Text: "🔄 重新加载", Data: BuildCallbackData(DKAdmin, "lib")},
+			},
+			{
+				{Text: "↩️ 返回管理面板", Data: BuildCallbackData(DKAdmin, "view")},
+			},
+		}
+		return text, rows
+	}
+	var boundCount int64
+	deps.DB.Model(&db.User{}).Where("jellyfin_user_id <> ''").Count(&boundCount)
+	text := fmt.Sprintf(
+		"📚 <b>媒体库访问控制</b>\n\n"+
+			"模板基线（全体普通用户默认值）：\n"+
+			"· 库访问：%s\n"+
+			"· 并发会话上限：%s\n\n"+
+			"本地绑定用户：%d 人\n"+
+			"（白名单单独覆盖在「✅ 白名单」面板设置；用户可在「📚 我的媒体库」自选隐藏）",
+		libDescText(la.EnableAllFolders, len(la.EnabledFolders)),
+		sessionsLimitText(la.MaxActiveSessions), boundCount)
+	rows := [][]KeyboardButton{
+		{
+			{Text: "🎬 编辑模板库访问", Data: BuildCallbackData(DKAdmin, "lib:edit")},
+		},
+		{
+			{Text: "⏱ 设置并发上限", Data: BuildCallbackData(DKAdmin, "lib:sessions")},
+			{Text: "🚀 应用到全体用户", Data: BuildCallbackData(DKAdmin, "lib:apply")},
+		},
+		{
+			{Text: "↩️ 返回管理面板", Data: BuildCallbackData(DKAdmin, "view")},
+		},
+	}
+	return text, rows
+}
+
+// sessionsLimitText 并发上限文案（0=不限）。
+func sessionsLimitText(n int) string {
+	if n <= 0 {
+		return "不限"
+	}
+	return itoa(n)
 }
 
 // regPanel 注册与兑换子面板：开注（含名额）/ 积分兑换邀请码开关与配额。

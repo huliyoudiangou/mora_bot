@@ -86,6 +86,10 @@ func (r *Router) handleMessageInner(ctx context.Context, msg *Message, text stri
 		r.dispatchCommand(ctx, cmd, args, msg)
 		return
 	}
+	// 批量应用库访问的「确认/取消」回复：独立于会话体系的单次确认，优先消费。
+	if r.handleAdminLibConfirmStep(ctx, msg) {
+		return
+	}
 	// 非命令：若在会话中，推进下一步；否则显示主面板（纯按钮交互优先）。
 	if r.continueSession(ctx, msg) {
 		return
@@ -177,6 +181,9 @@ func (r *Router) dispatchCommand(ctx context.Context, cmd string, args []string,
 	case "/cancel":
 		// 所有向导提示"回复 /cancel 可取消"：/cancel 以 / 开头必然走命令路径，
 		// 必须在这里清会话，否则各会话 step 里的 isCancelText 分支永远不可达。
+		// 同步清除媒体库批量应用的待确认状态与编辑器暂存。
+		setLibConfirmPending(msg.From.ID, false)
+		libEditors.drop(msg.From.ID)
 		if r.deps.Sessions != nil && r.deps.Sessions.Current(msg.From.ID) != nil {
 			r.deps.Sessions.Clear(msg.From.ID)
 			sendText(ctx, r.deps, msg.ChatID, "已取消当前操作。")

@@ -42,8 +42,11 @@ type User struct {
 	SignStreak         int    `gorm:"default:0"`
 	SecurityCodeHash   string `gorm:"size:64"`   // 安全码 HMAC（改密/解绑校验），空=未设置
 	PasswordResetCount int    `gorm:"default:0"` // 已通过安全码重置 Jellyfin 密码的次数（上限 2）
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// JellyLibOverride 白名单用户的库访问/并发覆盖（JSON 序列化 LibAccess），
+	// 空=跟随模板基线；仅对白名单（is_permanent）用户生效。
+	JellyLibOverride string `gorm:"size:512"`
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // DisplayName 用于消息展示的友好名称。

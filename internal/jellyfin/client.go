@@ -237,6 +237,96 @@ func (c *Client) SetUserDisabled(ctx context.Context, id string, disabled bool) 
 }
 
 // ---------------------------------------------------------------------------
+// 媒体库访问控制
+// ---------------------------------------------------------------------------
+
+// VirtualFolder 一个媒体库（GET /Library/VirtualFolders 的关键子集）。
+// ItemId 是库的稳定 GUID（服务器重启不变），供用户策略 EnabledFolders 与
+// 用户 Configuration.MyMediaExcludes 引用；库被删除后引用残留由 Jellyfin 忽略。
+type VirtualFolder struct {
+	ID             string `json:"ItemId"`
+	Name           string `json:"Name"`
+	CollectionType string `json:"CollectionType"`
+	Locations      []string `json:"Locations"`
+}
+
+// ListVirtualFolders 列出服务器上全部媒体库。
+func (c *Client) ListVirtualFolders(ctx context.Context) ([]VirtualFolder, error) {
+	var out []VirtualFolder
+	if err := c.do(ctx, http.MethodGet, "/Library/VirtualFolders", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// LibAccess 媒体库访问的三项受控字段。
+type LibAccess struct {
+	EnableAllFolders  bool
+	EnabledFolders    []string // EnableAllFolders=false 时生效（库 ItemId）
+	MaxActiveSessions int      // 同时在线会话上限（0=不限）
+}
+
+// ApplyLibAccess 读当前策略后只改库访问三项字段写回（其余字段原样保留），
+// 与 SetUserDisabled 同一套"读-改-写"防覆盖模式。
+// 目标必须是非管理员普通用户（调用方负责跳过管理员）。
+func (c *Client) ApplyLibAccess(ctx context.Context, userID string, la LibAccess) error {
+	u, ok, err := c.GetUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("Jellyfin 用户不存在 id=%s", userID)
+	}
+	p := u.Policy
+	p.EnableAllFolders = la.EnableAllFolders
+	if la.EnableAllFolders {
+		// 全库模式下列表清空，避免残留失效引用
+		p.EnabledFolders = nil
+	} else {
+		if len(la.EnabledFolders) == 0 {
+			p.EnabledFolders = []string{}
+		} else {
+			p.EnabledFolders = la.EnabledFolders
+		}
+	}
+	p.MaxActiveSessions = la.MaxActiveSessions
+	return c.UpdateUserPolicy(ctx, userID, p)
+}
+
+// GetUserConfiguration 读用户 Configuration（个人设置，含 MyMediaExcludes）。
+func (c *Client) GetUserConfiguration(ctx context.Context, userID string) (map[string]any, error) {
+	u, ok, err := c.getRawUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("Jellyfin 用户不存在 id=%s", userID)
+	}
+	if u.Configuration == nil {
+		return map[string]any{}, nil
+	}
+	return u.Configuration, nil
+}
+
+// SetMyMediaExcludes 更新用户 Configuration.MyMediaExcludes（从客户端首页隐藏指定库）。
+// 读-改-写只动这一个键，其余个人设置原样保留；excludes 传 nil 清空全部隐藏。
+// 这是纯显示层控制：隐藏的库内容仍可搜索观看，不触碰 Policy 权限。
+func (c *Client) SetMyMediaExcludes(ctx context.Context, userID string, excludes []string) error {
+	cfg, err := c.GetUserConfiguration(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if excludes == nil {
+		delete(cfg, "MyMediaExcludes")
+	} else if len(excludes) == 0 {
+		cfg["MyMediaExcludes"] = []string{}
+	} else {
+		cfg["MyMediaExcludes"] = excludes
+	}
+	return c.do(ctx, http.MethodPost, "/Users/"+url.PathEscape(userID)+"/Configuration", nil, cfg, nil)
+}
+
+// ---------------------------------------------------------------------------
 // 会话 / 设备
 // ---------------------------------------------------------------------------
 

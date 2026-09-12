@@ -42,6 +42,10 @@ const (
 	sessAdminRegQuota  = "admin_reg_quota"  // 设置开注名额：收非负整数（>0 自动开启新一轮开注）
 	sessAdminDramaRej  = "admin_drama_rej"  // 求剧工单驳回：收理由（Data.req_id/msg_id）
 
+	// 媒体库控制会话
+	sessAdminLibSessions = "admin_lib_sessions" // 设置模板并发上限：收非负整数（0=不限）
+	sessAdminWLLib       = "admin_wl_lib"       // 白名单单独库/并发设置：第 1 步收 tg_id
+
 	// 账号安全会话
 	sessSetSecurity = "account_set_security" // 设置/修改安全码：第 1 步收码 → 第 2 步确认
 	sessPwdChange   = "account_pwd_change"   // 修改密码：第 1 步安全码 → 第 2 步旧密码 → 第 3 步新密码

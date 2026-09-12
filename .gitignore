@@ -20,6 +20,8 @@ smoke_*.txt
 /mora
 /mora.exe
 dist/
+.gocache/
+.gopath/
 
 # ---------- IDE / 系统 ----------
 .idea/

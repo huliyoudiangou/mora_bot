@@ -26,7 +26,7 @@ func dispatchCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery)
 
 	switch DomainKind(domain) {
 	case DKMenu:
-		handleMenuAction(ctx, deps, cq, action)
+		handleMenuAction(ctx, deps, cq, action, args)
 	case DKProfile:
 		if action == "view" {
 			m := &Message{From: cq.From, ChatID: cq.ChatID}
@@ -69,8 +69,8 @@ func dispatchCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery)
 	}
 }
 
-// handleMenuAction 处理主菜单导航按钮（menu:home / menu:redeem / menu:help）。
-func handleMenuAction(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, action string) {
+// handleMenuAction 处理主菜单导航按钮（menu:home / menu:redeem / menu:mylibs / menu:libhide / menu:libshow / menu:help）。
+func handleMenuAction(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, action string, args []string) {
 	u, err := ensureUser(ctx, deps, cq.From)
 	if err != nil {
 		sendText(ctx, deps, cq.ChatID, "查询失败，请稍后再试。")
@@ -88,6 +88,22 @@ func handleMenuAction(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery,
 	case "lines":
 		// 用户面板「查询线路」：列出可用 Jellyfin 线路
 		sendLineList(ctx, deps, cq.ChatID)
+	case "mylibs":
+		// 用户面板「我的媒体库」：库列表 + 自选显示/隐藏
+		u, err := ensureUser(ctx, deps, cq.From)
+		if err != nil {
+			sendText(ctx, deps, cq.ChatID, "查询失败，请稍后再试。")
+			return
+		}
+		sendMyLibsPanel(ctx, deps, cq.From.ID, cq.ChatID, msgID, u)
+	case "libhide", "libshow":
+		// 切换某个库的首页隐藏状态（args[0]=folderID）
+		// DKMenu 走 dispatchCallback 的全局 ACK；这里各分支自行 ACK 结果文案。
+		if len(args) == 0 || args[0] == "" {
+			_ = deps.Snd.AnswerCallback(ctx, cq.ID, "参数错误", true)
+			return
+		}
+		handleMyLibToggle(ctx, deps, cq, action == "libhide", args[0])
 	case "help":
 		sendText(ctx, deps, cq.ChatID, helpText)
 		// 帮助后可回到面板
@@ -200,6 +216,10 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 			sendHTML(ctx, deps, cq.ChatID, "➖ 移除白名单\n请输入用户的 <b>tg_id</b>（将恢复受规则约束）：\n\n回复 /cancel 可取消。")
 		case args[0] == "list":
 			handleAdminWLList(ctx, deps, cq)
+		case args[0] == "lib":
+			// 白名单单独库/并发设置：入口收 tg_id
+			deps.Sessions.Begin(cq.From.ID, sessAdminWLLib)
+			sendHTML(ctx, deps, cq.ChatID, "📚 白名单单独库/并发设置 · 第 1 步\n请输入白名单用户的 <b>tg_id</b>：\n\n回复 /cancel 可取消。")
 		}
 	case "prices":
 		// 主面板入口：admin:prices → 打开卡密定价子面板
@@ -259,6 +279,25 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 			deps.Sessions.Begin(cq.From.ID, sessAdminQuota)
 			sendHTML(ctx, deps, cq.ChatID, "🎟 设置积分兑换邀请码配额\n请输入允许兑换的邀请码<b>总数</b>（0=不限），例如：<code>10</code>\n\n回复 /cancel 可取消。")
 		}
+	case "lib", "libt":
+		// 媒体库访问控制子面板：
+		// admin:lib            → 子面板（无 args 时也处理 libt 兜底）
+		// admin:lib:edit       → 模板库访问编辑器（逐库开关）
+		// admin:lib:save       → 保存编辑结果到模板 Policy
+		// admin:lib:cancel     → 丢弃编辑器暂存
+		// admin:lib:sessions   → 设置模板并发上限向导
+		// admin:lib:apply      → 批量应用到全体用户（需回复「确认」）
+		// admin:libt:<GUID32>  → 编辑器内切换某个库
+		(&Router{deps: deps}).handleAdminLibCallback(ctx, deps, cq, action, args)
+	case "wllib":
+		// 白名单单独库/并发设置：
+		// admin:wllib:t:<GUID32>  → 编辑器内切换某个库
+		// admin:wllib:sess        → 并发上限 +1
+		// admin:wllib:sess0       → 并发上限切不限
+		// admin:wllib:save        → 保存覆盖并立即单独应用
+		// admin:wllib:clear       → 清除覆盖（恢复跟随模板，立即重套基线）
+		// admin:wllib:cancel      → 丢弃编辑器暂存
+		(&Router{deps: deps}).handleAdminWLLibCallback(ctx, deps, cq, args)
 	case "tickets":
 		// admin:tickets → 工单子面板；admin:tickets:list:<status> → 按状态列表
 		switch {
@@ -285,7 +324,7 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 	}
 }
 
-// sendAdminSub 发送管理面板子面板（白名单/定价/线路）。
+// sendAdminSub 发送管理面板子面板（白名单/定价/线路/媒体库）。
 func sendAdminSub(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, which string) {
 	if deps.IsSuper == nil || !deps.IsSuper(cq.From.ID) {
 		return
@@ -311,6 +350,9 @@ func sendAdminSub(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, whi
 		sendPanel(ctx, deps, cq.ChatID, msgID, text, rows)
 	case "tickets":
 		text, rows := ticketsPanel(deps, u)
+		sendPanel(ctx, deps, cq.ChatID, msgID, text, rows)
+	case "lib":
+		text, rows := libPanel(ctx, deps, u)
 		sendPanel(ctx, deps, cq.ChatID, msgID, text, rows)
 	}
 }
