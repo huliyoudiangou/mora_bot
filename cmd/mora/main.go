@@ -132,6 +132,7 @@ func main() {
 				deps.Lockers.GC(now)
 				deps.SessionLocks.GC(now)
 				bot.GCSecurityGuard(now)
+				bot.GCLibEditors(now)
 			}
 		}
 	}()

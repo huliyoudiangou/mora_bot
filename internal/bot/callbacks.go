@@ -20,7 +20,11 @@ func dispatchCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery)
 	// 立刻 ACK，避免 TG 客户端转圈。
 	// drama 与 admin 域的处理分支各自应答一次（带权限/结果文案），这里跳过，
 	// 否则同一 callbackID 会被二次 ACK，Telegram 会拒绝且丢失反馈。
-	if DomainKind(domain) != DKDrama && DomainKind(domain) != DKAdmin {
+	// menu 域的 libhide/libshow 同理：handleMyLibToggle 各分支自行 ACK 结果文案
+	//（已隐藏/已恢复），必须跳过全局空 ACK。
+	skipGlobalACK := DomainKind(domain) == DKDrama || DomainKind(domain) == DKAdmin ||
+		(DomainKind(domain) == DKMenu && (action == "libhide" || action == "libshow"))
+	if !skipGlobalACK {
 		_ = deps.Snd.AnswerCallback(ctx, cq.ID, "", false)
 	}
 
@@ -98,7 +102,7 @@ func handleMenuAction(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery,
 		sendMyLibsPanel(ctx, deps, cq.From.ID, cq.ChatID, msgID, u)
 	case "libhide", "libshow":
 		// 切换某个库的首页隐藏状态（args[0]=folderID）
-		// DKMenu 走 dispatchCallback 的全局 ACK；这里各分支自行 ACK 结果文案。
+		// 已跳过全局空 ACK：handleMyLibToggle 各分支恰好应答一次结果文案。
 		if len(args) == 0 || args[0] == "" {
 			_ = deps.Snd.AnswerCallback(ctx, cq.ID, "参数错误", true)
 			return

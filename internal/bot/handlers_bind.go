@@ -263,6 +263,17 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 			sendText(ctx, deps, msg.ChatID, "注册成功，但有效期设置失败，请联系管理员处理。")
 		}
 	}
+	// 媒体库基线双保险：克隆拿到的是模板克隆瞬间的权限，若管理员改过基线但尚未
+	// 「应用到全体」，克隆结果会落后；且重新注册会话可能残留旧覆盖（jelly_lib_override
+	// 未随解绑/注销清除）。这里按当前生效链（覆盖优先/模板基线）再套用一次，消除旧权限窗口。
+	// 失败不阻断注册（克隆已是可用基线），仅提示管理员可在「应用到全体」时兜底。
+	if deps.JF != nil && deps.JFServerBase != "" {
+		if la := effectiveLibAccess(parseLibOverride(u.JellyLibOverride), templateLibAccess(ctx, deps)); la != nil {
+			if err := deps.JF.ApplyLibAccess(ctx, ju.ID, *la); err != nil {
+				sendText(ctx, deps, msg.ChatID, "注册成功，但媒体库基线同步失败，请联系管理员在「应用到全体用户」时兜底。")
+			}
+		}
+	}
 	deps.Sessions.Clear(msg.From.ID)
 	sendText(ctx, deps, msg.ChatID, "✅ 注册成功，欢迎加入果果屋。")
 }

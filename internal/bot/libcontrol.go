@@ -131,24 +131,43 @@ func applyLibAccessToAll(ctx context.Context, deps *HandlerDeps, adminID int64) 
 	}
 	var okN, skipN, failN int
 	var failed []string
+	var consecFails int
 	for _, u := range users {
+		// 连续失败快速中止：Jellyfin 整体不可达时逐用户重试没有意义，
+		// 每次还要等 15s 客户端超时，连续 5 个失败提前结束并汇报（可稍后重试）。
+		if consecFails >= 5 {
+			sendText(runCtx, deps, adminID, "❌ 批量应用中止：连续多个用户处理失败，Jellyfin 服务可能不可达，请稍后重试。")
+			break
+		}
+		// 与覆盖套用互斥：批量写 Policy 期间不允许覆盖保存/清除并发写同一用户。
+		libApplyMu.Lock()
 		// Jellyfin 侧管理员账户永远跳过：bot 不碰管理员的库权限。
 		if ju, found, err := deps.JF.GetUser(runCtx, u.JellyfinUserID); err == nil && found && ju.Policy.IsAdministrator {
+			libApplyMu.Unlock()
 			skipN++
 			continue
 		}
 		applied, _, err := applyLibAccessToUser(runCtx, deps, u, template)
+		libApplyMu.Unlock()
 		switch {
 		case err != nil:
 			failN++
+			consecFails++
 			if len(failed) < failListMax {
 				failed = append(failed, fmt.Sprintf("tg=%d", u.TelegramID))
 			}
 		case applied:
 			okN++
+			consecFails = 0
 		default:
 			skipN++
+			consecFails = 0
 		}
+	}
+	if consecFails >= 5 {
+		_ = db.WriteAudit(deps.DB, adminID, "admin_lib_apply_all", "jellyfin_policy", "all_users",
+			fmt.Sprintf("批量应用库访问中止（连续失败）：成功 %d，跳过 %d，失败 %d", okN, skipN, failN))
+		return
 	}
 	_ = db.WriteAudit(deps.DB, adminID, "admin_lib_apply_all", "jellyfin_policy", "all_users",
 		fmt.Sprintf("批量应用库访问：成功 %d，跳过 %d（管理员/未绑定/无基线），失败 %d", okN, skipN, failN))
@@ -174,7 +193,8 @@ const failListMax = 20
 // 白名单覆盖的套用与清除
 // ---------------------------------------------------------------------------
 
-// libApplyMu 串行化"写覆盖 → 立即套用"路径，防止同一用户并发改配置。
+// libApplyMu 串行化所有写用户 Policy 的路径（覆盖套用/清除、批量应用、
+// 移除白名单重套、注册基线套用），防止同一用户被并发写两个不同配置互相覆盖。
 var libApplyMu sync.Mutex
 
 // saveOverrideAndApply 保存白名单覆盖并立即单独套用到该用户。
@@ -248,56 +268,6 @@ func containsFold(list []string, id string) bool {
 		}
 	}
 	return false
-}
-
-// toggleMyLibHide 切换用户对某个库的首页隐藏状态（写该用户自己的 Configuration）。
-// 只允许操作"已被允许"的库：未开放库不可隐藏（本来就不在首页）。
-// 返回切换后的新隐藏状态。
-func toggleMyLibHide(ctx context.Context, deps *HandlerDeps, u *db.User, folderID string) (bool, error) {
-	if deps == nil || deps.JF == nil || u == nil || u.JellyfinUserID == "" {
-		return false, fmt.Errorf("Jellyfin 未配置或账号未绑定")
-	}
-	// 生效策略校验：只能隐藏已被允许的库。
-	la := effectiveLibAccess(parseLibOverride(u.JellyLibOverride), templateLibAccess(ctx, deps))
-	folders, err := deps.JF.ListVirtualFolders(ctx)
-	if err != nil {
-		return false, err
-	}
-	var target *jellyfin.VirtualFolder
-	for i := range folders {
-		if strings.EqualFold(folders[i].ID, folderID) {
-			target = &folders[i]
-			break
-		}
-	}
-	if target == nil {
-		return false, fmt.Errorf("媒体库不存在")
-	}
-	allowed := la != nil && (la.EnableAllFolders || containsFold(la.EnabledFolders, target.ID))
-	if !allowed {
-		return false, fmt.Errorf("该媒体库未对你开放")
-	}
-	cfg, err := deps.JF.GetUserConfiguration(ctx, u.JellyfinUserID)
-	if err != nil {
-		return false, err
-	}
-	cur := currentExcludes(cfg)
-	hidden := containsFold(cur, target.ID)
-	var next []string
-	if hidden {
-		// 取消隐藏：从列表移除
-		for _, v := range cur {
-			if !strings.EqualFold(v, target.ID) {
-				next = append(next, v)
-			}
-		}
-	} else {
-		next = append(cur, target.ID)
-	}
-	if err := deps.JF.SetMyMediaExcludes(ctx, u.JellyfinUserID, next); err != nil {
-		return false, err
-	}
-	return !hidden, nil
 }
 
 // currentExcludes 从用户 Configuration 中取出 MyMediaExcludes（缺失/类型异常返回空）。
@@ -467,7 +437,11 @@ func toggleMyLibHideTo(ctx context.Context, deps *HandlerDeps, u *db.User, folde
 	}
 	var next []string
 	if hide {
-		next = append(cur, target.ID)
+		if already != hide {
+			next = append(cur, target.ID)
+		} else {
+			next = cur
+		}
 	} else {
 		for _, v := range cur {
 			if !strings.EqualFold(v, target.ID) {
@@ -487,9 +461,36 @@ func toggleMyLibHideTo(ctx context.Context, deps *HandlerDeps, u *db.User, folde
 
 // libEditorSessions 模板库编辑器会话状态（每管理员一份）。
 // 回调切换只改内存暂存，💾 保存才真正写模板 Policy。
+// 带 30 分钟 TTL：过期自动丢弃（编辑器/确认状态均为内存态，/cancel 之外
+// 的唯一清理手段，防止管理员放弃编辑后暂存永久滞留）。
 type libEditorSessions struct {
 	mu     sync.Mutex
-	owners map[int64]*libEditor
+	owners map[int64]*libEditorEntry
+}
+
+// libEditorEntry 编辑器 + 最后活跃时间。
+type libEditorEntry struct {
+	Ed       *libEditor
+	LastUsed time.Time
+}
+
+// libEditorTTL 编辑器/确认状态的存活上限（与会话 TTL 一致）。
+const libEditorTTL = 30 * time.Minute
+
+// touch 刷新最后活跃时间（调用方已持有锁时直接改字段）。
+func (s *libEditorSessions) touchLocked(adminID int64) {
+	if e, ok := s.owners[adminID]; ok {
+		e.LastUsed = time.Now()
+	}
+}
+
+// gcLocked 丢弃超时未活跃的编辑器（调用方已持有锁）。
+func (s *libEditorSessions) gcLocked(now time.Time) {
+	for id, e := range s.owners {
+		if now.Sub(e.LastUsed) > libEditorTTL {
+			delete(s.owners, id)
+		}
+	}
 }
 
 // libEditor 单个管理员的编辑器状态（模板编辑与白名单覆盖编辑共用）。
@@ -500,8 +501,15 @@ type libEditor struct {
 	TargetTG    int64                    // 白名单覆盖编辑的目标 tg_id（模板编辑为 0）
 }
 
-// libEditors 模板库编辑器全局状态（内存态，30 分钟会话由调用方超时丢弃）。
-var libEditors = &libEditorSessions{owners: map[int64]*libEditor{}}
+// libEditors 模板库编辑器全局状态（内存态，30 分钟 TTL 过期自动丢弃）。
+var libEditors = &libEditorSessions{owners: map[int64]*libEditorEntry{}}
+
+// GCLibEditors 周期清理超时编辑器（供 main 的分钟级 GC 调用）。
+func GCLibEditors(now time.Time) {
+	libEditors.mu.Lock()
+	defer libEditors.mu.Unlock()
+	libEditors.gcLocked(now)
+}
 
 // beginLibEditor 开始编辑：以模板当前策略为初值。
 func (s *libEditorSessions) beginLibEditor(adminID int64, folders []jellyfin.VirtualFolder, la *jellyfin.LibAccess) {
@@ -516,14 +524,24 @@ func (s *libEditorSessions) beginLibEditor(adminID int64, folders []jellyfin.Vir
 		e.Allowed[strings.ToLower(f.ID)] = allowed
 	}
 	// 全库模式下进入编辑器仍是逐库开关展示（全部为 true），保存时若全为 true 按 All=true 落库
-	s.owners[adminID] = e
+	s.owners[adminID] = &libEditorEntry{Ed: e, LastUsed: time.Now()}
 }
 
-// editorOf 取编辑器状态；无返回 nil。
+// editorOf 取编辑器状态；无或已过期返回 nil。
 func (s *libEditorSessions) editorOf(adminID int64) *libEditor {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.owners[adminID]
+	entry, ok := s.owners[adminID]
+	if !ok {
+		return nil
+	}
+	// 惰性过期：读取时超时即丢弃
+	if time.Since(entry.LastUsed) > libEditorTTL {
+		delete(s.owners, adminID)
+		return nil
+	}
+	entry.LastUsed = time.Now()
+	return entry.Ed
 }
 
 // drop 丢弃编辑器状态。
@@ -608,8 +626,9 @@ func sendLibEditorPanel(ctx context.Context, deps *HandlerDeps, adminID int64, c
 }
 
 // libConfirmSessions 批量应用确认会话（确认词模式，复用设备清理 confirm 思路）。
-// 内存态：adminID → true（已请求批量应用，等待回复「确认」）。
-var libConfirmPending = map[int64]bool{}
+// 内存态：adminID → 请求时间；30 分钟 TTL 过期自动失效（与编辑器一致），
+// 防止管理员点了「🚀」后放弃、待确认状态永久滞留（之后任何文本都被当确认词消费）。
+var libConfirmPending = map[int64]time.Time{}
 var libConfirmMu sync.Mutex
 
 // setLibConfirmPending 标记/清除批量应用待确认状态。
@@ -617,17 +636,25 @@ func setLibConfirmPending(adminID int64, pending bool) {
 	libConfirmMu.Lock()
 	defer libConfirmMu.Unlock()
 	if pending {
-		libConfirmPending[adminID] = true
+		libConfirmPending[adminID] = time.Now()
 	} else {
 		delete(libConfirmPending, adminID)
 	}
 }
 
-// isLibConfirmPending 是否处于待确认状态。
+// isLibConfirmPending 是否处于待确认状态（超时自动失效并清除）。
 func isLibConfirmPending(adminID int64) bool {
 	libConfirmMu.Lock()
 	defer libConfirmMu.Unlock()
-	return libConfirmPending[adminID]
+	ts, ok := libConfirmPending[adminID]
+	if !ok {
+		return false
+	}
+	if time.Since(ts) > libEditorTTL {
+		delete(libConfirmPending, adminID)
+		return false
+	}
+	return true
 }
 
 // handleAdminLibCallback 媒体库访问控制子面板的全部回调（action=lib/libt）。
@@ -838,7 +865,7 @@ func jellyfinErrText(err error) string {
 // ---------------------------------------------------------------------------
 
 // wlLibEditors 白名单覆盖编辑器（每管理员一份，target 存目标 tg_id）。
-var wlLibEditors = &libEditorSessions{owners: map[int64]*libEditor{}}
+var wlLibEditors = &libEditorSessions{owners: map[int64]*libEditorEntry{}}
 
 // wlLibTargetOf 取白名单覆盖编辑器的目标 tg_id（无编辑器返回 0）。
 func wlLibTargetOf(adminID int64) int64 {
@@ -863,7 +890,7 @@ func (s *libEditorSessions) beginWLLibEditor(adminID, targetTG int64, folders []
 		allowed := la.EnableAllFolders || containsFold(la.EnabledFolders, f.ID)
 		e.Allowed[strings.ToLower(f.ID)] = allowed
 	}
-	s.owners[adminID] = e
+	s.owners[adminID] = &libEditorEntry{Ed: e, LastUsed: time.Now()}
 }
 
 // sendWLLibEditorPanel 发送白名单覆盖编辑面板（逐库开关 + 并发上限 + 保存/清除）。

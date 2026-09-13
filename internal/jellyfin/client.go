@@ -310,6 +310,8 @@ func (c *Client) GetUserConfiguration(ctx context.Context, userID string) (map[s
 
 // SetMyMediaExcludes 更新用户 Configuration.MyMediaExcludes（从客户端首页隐藏指定库）。
 // 读-改-写只动这一个键，其余个人设置原样保留；excludes 传 nil 清空全部隐藏。
+// 引用统一大写归一：库 ItemId 是大写 GUID，历史数据可能存有小写引用，
+// 与 Policy.EnabledFolders 的比对（containsFold 大小写不敏感）保持一致。
 // 这是纯显示层控制：隐藏的库内容仍可搜索观看，不触碰 Policy 权限。
 func (c *Client) SetMyMediaExcludes(ctx context.Context, userID string, excludes []string) error {
 	cfg, err := c.GetUserConfiguration(ctx, userID)
@@ -321,7 +323,11 @@ func (c *Client) SetMyMediaExcludes(ctx context.Context, userID string, excludes
 	} else if len(excludes) == 0 {
 		cfg["MyMediaExcludes"] = []string{}
 	} else {
-		cfg["MyMediaExcludes"] = excludes
+		norm := make([]string, 0, len(excludes))
+		for _, id := range excludes {
+			norm = append(norm, strings.ToUpper(strings.TrimSpace(id)))
+		}
+		cfg["MyMediaExcludes"] = norm
 	}
 	return c.do(ctx, http.MethodPost, "/Users/"+url.PathEscape(userID)+"/Configuration", nil, cfg, nil)
 }

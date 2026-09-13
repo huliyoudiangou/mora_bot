@@ -252,8 +252,23 @@ func (r *Router) handleAdminWLStep(ctx context.Context, msg *Message) {
 			sendText(ctx, deps, msg.ChatID, "移除白名单失败："+err.Error())
 			return
 		}
+		// 同步清空单独库/并发覆盖：覆盖仅对白名单用户生效（生效链按 is_permanent
+		// 解释），移除后残留的 jelly_lib_override 会被批量应用误套用，必须清掉。
+		// 再按模板基线重套一次，立即收回原白名单持有的覆盖权限（失败仅提示，管理员可批量应用兜底）。
+		if deps.JF != nil && u.JellyfinUserID != "" {
+			if err := deps.DB.Model(&u).Update("jelly_lib_override", "").Error; err == nil {
+				u.JellyLibOverride = ""
+				if la := templateLibAccess(ctx, deps); la != nil {
+					if aerr := deps.JF.ApplyLibAccess(ctx, u.JellyfinUserID, *la); aerr != nil {
+						sendText(ctx, deps, msg.ChatID, "已移除白名单，但基线重套失败，请在「📚 媒体库控制」→「🚀 应用到全体用户」时兜底。")
+					}
+				}
+			} else {
+				sendText(ctx, deps, msg.ChatID, "已移除白名单，但清空库覆盖失败，请在「📚 单独库/并发设置」→「♻️ 清除覆盖」时兜底。")
+			}
+		}
 		_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_whitelist_del", "user", itoa64s(tgID), "移除白名单")
-		sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 已移除白名单：tg=%d（恢复受规则约束）", tgID))
+		sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 已移除白名单：tg=%d（恢复受规则约束，库访问已恢复跟随模板基线）", tgID))
 	default: // add
 		err := deps.DB.Model(&u).Updates(map[string]any{
 			"is_permanent": true,
