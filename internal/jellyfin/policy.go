@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 )
-
 // rawUserDTO 全字段透传版（只为克隆策略，避免结构体裁剪掉 Jellyfin 未来新增字段）。
 type rawUserDTO struct {
 	ID            string         `json:"Id"`
@@ -15,14 +14,30 @@ type rawUserDTO struct {
 }
 
 func (c *Client) getRawUser(ctx context.Context, id string) (*rawUserDTO, bool, error) {
+	// 单用户端点（GET /Users/{id}）：避免 GET /Users 全量列表（含所有人
+	// Policy+Configuration，用户多时响应慢、体积大）。404 视为用户不存在，
+	// 其余错误原样返回；ID 兼容按用户名解析（旧路径语义）时回退全量列表。
+	escaped := url.PathEscape(id)
+	var u rawUserDTO
+	err := c.do(ctx, "GET", "/Users/"+escaped, nil, nil, &u)
+	if err == nil {
+		if u.ID != "" {
+			return &u, true, nil
+		}
+		return nil, false, nil
+	}
+	// 仅当服务端对未知用户返回 404 时才回退按名解析；其它错误（网络/权限）直接失败
+	if StatusCode(err) != 404 {
+		return nil, false, err
+	}
 	var users []rawUserDTO
 	if err := c.do(ctx, "GET", "/Users", nil, nil, &users); err != nil {
 		return nil, false, err
 	}
-	for _, u := range users {
-		if u.ID == id || u.Name == id {
-			uu := u
-			return &uu, true, nil
+	for _, v := range users {
+		if v.ID == id || v.Name == id {
+			vv := v
+			return &vv, true, nil
 		}
 	}
 	return nil, false, nil

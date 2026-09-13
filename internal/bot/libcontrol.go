@@ -77,19 +77,96 @@ func effectiveLibAccess(lo *libOverride, template *jellyfin.LibAccess) *jellyfin
 
 // templateLibAccess 从模板用户当前策略读基线（库访问 + 并发上限）。
 // 模板未配置或读取失败返回 nil。
+// 读路径带 60 秒 TTL 缓存：用户侧面板/切换每次要拉模板策略 + 库列表，
+// 每次都打 Jellyfin 会让回调响应明显变慢；写路径（模板保存/批量应用等）
+// 调 invalidateLibAccessCache 立即失效，保证管理员改动即时可见。
 func templateLibAccess(ctx context.Context, deps *HandlerDeps) *jellyfin.LibAccess {
 	if deps == nil || deps.JF == nil || deps.JFServerBase == "" {
 		return nil
+	}
+	if la, ok := loadLibAccessCache(); ok {
+		return la
 	}
 	u, ok, err := deps.JF.GetUser(ctx, deps.JFServerBase)
 	if err != nil || !ok {
 		return nil
 	}
-	return &jellyfin.LibAccess{
+	la := &jellyfin.LibAccess{
 		EnableAllFolders:  u.Policy.EnableAllFolders,
 		EnabledFolders:    u.Policy.EnabledFolders,
 		MaxActiveSessions: u.Policy.MaxActiveSessions,
 	}
+	storeLibAccessCache(la)
+	return la
+}
+
+// invalidateLibAccessCache 模板基线缓存失效（模板 Policy 任何写路径之后调用）。
+func invalidateLibAccessCache() {
+	libAccessCacheMu.Lock()
+	libAccessCache = nil
+	libAccessCacheMu.Unlock()
+}
+
+// libAccessCache 模板基线短 TTL 缓存（内存态，60 秒过期，写路径立即失效）。
+var (
+	libAccessCache   *jellyfin.LibAccess
+	libAccessCacheAt time.Time
+	libAccessCacheMu sync.Mutex
+)
+
+// libAccessCacheTTL 模板基线缓存存活时长。
+const libAccessCacheTTL = 60 * time.Second
+
+// loadLibAccessCache 读缓存（未过期返回 true）。
+func loadLibAccessCache() (*jellyfin.LibAccess, bool) {
+	libAccessCacheMu.Lock()
+	defer libAccessCacheMu.Unlock()
+	if libAccessCache == nil || time.Since(libAccessCacheAt) > libAccessCacheTTL {
+		return nil, false
+	}
+	la := *libAccessCache
+	return &la, true
+}
+
+// storeLibAccessCache 写缓存（拷贝存，防外部修改串味）。
+func storeLibAccessCache(la *jellyfin.LibAccess) {
+	libAccessCacheMu.Lock()
+	defer libAccessCacheMu.Unlock()
+	c := *la
+	libAccessCache = &c
+	libAccessCacheAt = time.Now()
+}
+
+// libFoldersCache 媒体库列表短 TTL 缓存（同模板基线，用户侧高频读）。
+var (
+	libFoldersCache   []jellyfin.VirtualFolder
+	libFoldersCacheAt time.Time
+	libFoldersCacheMu sync.Mutex
+)
+
+// libFoldersCacheTTL 媒体库列表缓存存活时长（列表变化低频，30 秒足够）。
+const libFoldersCacheTTL = 30 * time.Second
+
+// listVirtualFoldersCached 带缓存的媒体库列表（用户侧面板/切换高频读）。
+func listVirtualFoldersCached(ctx context.Context, deps *HandlerDeps) ([]jellyfin.VirtualFolder, error) {
+	libFoldersCacheMu.Lock()
+	if libFoldersCache != nil && time.Since(libFoldersCacheAt) <= libFoldersCacheTTL {
+		out := make([]jellyfin.VirtualFolder, len(libFoldersCache))
+		copy(out, libFoldersCache)
+		libFoldersCacheMu.Unlock()
+		return out, nil
+	}
+	libFoldersCacheMu.Unlock()
+	folders, err := deps.JF.ListVirtualFolders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	libFoldersCacheMu.Lock()
+	libFoldersCache = make([]jellyfin.VirtualFolder, len(folders))
+	copy(libFoldersCache, folders)
+	libFoldersCacheAt = time.Now()
+	libFoldersCacheMu.Unlock()
+	return folders, nil
 }
 
 // applyLibAccessToUser 对单个用户套用库访问（管理员跳过；无生效配置跳过）。
@@ -307,7 +384,7 @@ func sendMyLibsPanel(ctx context.Context, deps *HandlerDeps, userID int64, chatI
 		sendText(ctx, deps, chatID, "你还没有绑定 Jellyfin 账号，请先「🔗 绑定已有账号」或「📝 注册新账号」。")
 		return
 	}
-	folders, err := deps.JF.ListVirtualFolders(ctx)
+	folders, err := listVirtualFoldersCached(ctx, deps)
 	if err != nil {
 		sendText(ctx, deps, chatID, "获取媒体库列表失败，请稍后再试。")
 		return
@@ -370,10 +447,15 @@ func sendMyLibsPanel(ctx context.Context, deps *HandlerDeps, userID int64, chatI
 }
 
 // handleMyLibToggle 用户切换某个库的首页隐藏状态（libhide=隐藏 / libshow=显示）。
+// 先立即 ACK（清转圈），再执行 Jellyfin 读写链；结果文案由刷新的面板呈现，
+// 失败时用 alert 提示。
 func handleMyLibToggle(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery, hide bool, folderID string) {
 	ack := func(text string, alert bool) {
 		_ = deps.Snd.AnswerCallback(ctx, cq.ID, text, alert)
 	}
+	// 立即 ACK 清转圈：后面的 Jellyfin 链（单用户配置读 + 隐藏写 + 面板刷新）
+	// 可能要几秒，不先 ACK 用户侧会一直转圈。
+	ack("", false)
 	u, err := ensureUser(ctx, deps, cq.From)
 	if err != nil {
 		ack("查询失败，请稍后再试", true)
@@ -384,7 +466,6 @@ func handleMyLibToggle(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery
 		return
 	}
 	if hide {
-		// 直接走 toggleMyLibHide 的允许校验与写入（幂等：已隐藏再隐藏结果不变）。
 		_, err = toggleMyLibHideTo(ctx, deps, u, folderID, true)
 	} else {
 		_, err = toggleMyLibHideTo(ctx, deps, u, folderID, false)
@@ -393,12 +474,7 @@ func handleMyLibToggle(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery
 		ack(err.Error(), true)
 		return
 	}
-	if hide {
-		ack("已从首页隐藏", false)
-	} else {
-		ack("已恢复首页显示", false)
-	}
-	// 原地刷新面板
+	// 原地刷新面板（结果以面板三态呈现）
 	sendMyLibsPanel(ctx, deps, cq.From.ID, cq.ChatID, messageIDOf(cq), u)
 }
 
@@ -408,7 +484,7 @@ func toggleMyLibHideTo(ctx context.Context, deps *HandlerDeps, u *db.User, folde
 		return false, fmt.Errorf("Jellyfin 未配置或账号未绑定")
 	}
 	la := effectiveLibAccess(parseLibOverride(u.JellyLibOverride), templateLibAccess(ctx, deps))
-	folders, err := deps.JF.ListVirtualFolders(ctx)
+	folders, err := listVirtualFoldersCached(ctx, deps)
 	if err != nil {
 		return false, fmt.Errorf("获取媒体库失败，请稍后再试")
 	}
@@ -678,7 +754,7 @@ func (r *Router) handleAdminLibCallback(ctx context.Context, deps *HandlerDeps, 
 				sendText(ctx, deps, cq.ChatID, "Jellyfin 未配置。")
 				return
 			}
-			folders, err := deps.JF.ListVirtualFolders(ctx)
+			folders, err := listVirtualFoldersCached(ctx, deps)
 			if err != nil {
 				sendText(ctx, deps, cq.ChatID, "获取媒体库列表失败："+jellyfinErrText(err))
 				return
@@ -707,6 +783,8 @@ func (r *Router) handleAdminLibCallback(ctx context.Context, deps *HandlerDeps, 
 				sendText(ctx, deps, cq.ChatID, "保存失败："+jellyfinErrText(err))
 				return
 			}
+			// 模板 Policy 已变：立即失效基线缓存，管理员/用户侧改动即时可见。
+			invalidateLibAccessCache()
 			libEditors.drop(cq.From.ID)
 			_ = db.WriteAudit(deps.DB, cq.From.ID, "admin_lib_edit_template", "jellyfin_policy",
 				"template:"+deps.JFServerBase,
@@ -844,6 +922,8 @@ func (r *Router) handleAdminLibSessionsStep(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "保存失败："+jellyfinErrText(err))
 		return
 	}
+	// 模板 Policy 已变：立即失效基线缓存。
+	invalidateLibAccessCache()
 	_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_lib_sessions", "jellyfin_policy",
 		"template:"+deps.JFServerBase, fmt.Sprintf("模板并发上限=%d", n))
 	sendText(ctx, deps, msg.ChatID,
@@ -975,7 +1055,7 @@ func (r *Router) handleAdminWLLibStep(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "Jellyfin 未配置。")
 		return
 	}
-	folders, err := deps.JF.ListVirtualFolders(ctx)
+	folders, err := listVirtualFoldersCached(ctx, deps)
 	if err != nil {
 		sendText(ctx, deps, msg.ChatID, "获取媒体库列表失败："+jellyfinErrText(err))
 		return

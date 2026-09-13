@@ -159,6 +159,9 @@ func adminPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 			{Text: "🎫 工单管理", Data: BuildCallbackData(DKAdmin, "tickets")},
 		},
 		{
+			{Text: "📚 媒体库访问控制", Data: BuildCallbackData(DKAdmin, "lib")},
+		},
+		{
 			{Text: "↩️ 返回主菜单", Data: BuildCallbackData(DKMenu, "home")},
 		},
 	}

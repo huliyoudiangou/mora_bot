@@ -94,6 +94,8 @@ func handleMenuAction(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery,
 		sendLineList(ctx, deps, cq.ChatID)
 	case "mylibs":
 		// 用户面板「我的媒体库」：库列表 + 自选显示/隐藏
+		// 先 ACK 清转圈：面板要拉媒体库列表 + 用户配置，可能要几秒。
+		_ = deps.Snd.AnswerCallback(ctx, cq.ID, "", false)
 		u, err := ensureUser(ctx, deps, cq.From)
 		if err != nil {
 			sendText(ctx, deps, cq.ChatID, "查询失败，请稍后再试。")
