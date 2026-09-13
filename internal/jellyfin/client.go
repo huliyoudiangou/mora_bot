@@ -70,6 +70,11 @@ func StatusCode(err error) int {
 	return 0
 }
 
+// ErrUserNotFound 目标用户在 Jellyfin 侧不存在（HTTP 404）。
+// 以哨兵错误暴露：调用方（批量应用重试等）据此区分「用户不存在（重试无意义）」
+// 与「网络类瞬时失败（值得重试）」。
+var ErrUserNotFound = errors.New("Jellyfin 用户不存在")
+
 // apiError 把 HTTP 非 2xx 转成结构化错误。
 func (c *Client) apiError(resp *http.Response, body []byte) error {
 	return &APIError{
@@ -166,16 +171,30 @@ func (c *Client) ListUsers(ctx context.Context) ([]UserDTO, error) {
 	return out, nil
 }
 
-// GetUser 按 ID 拉单个用户；不存在返回 IsNotFound=true。
+// GetUser 按 ID 拉单个用户；不存在返回 ok=false。
+// 走单用户端点 GET /Users/{id}：批量应用/面板等高频路径避免 GET /Users
+// 全量列表（用户多时每次都拉全量、体积大、慢、易超时——批量应用每用户
+// 原本要拉 2 次全量，是「应用到全体」跑不完/超时的根因之一）。
+// 仅当端点返回 404 时才回退全量列表按 ID/名称匹配（兼容旧调用语义），
+// 其余错误（网络/权限）直接返回，不做无意义的全量重试。
 func (c *Client) GetUser(ctx context.Context, id string) (*UserDTO, bool, error) {
+	escaped := url.PathEscape(id)
+	var u UserDTO
+	if err := c.do(ctx, http.MethodGet, "/Users/"+escaped, nil, nil, &u); err == nil {
+		if u.ID != "" {
+			return &u, true, nil
+		}
+		return nil, false, nil
+	} else if StatusCode(err) != http.StatusNotFound {
+		return nil, false, err
+	}
 	var users []UserDTO
 	if err := c.do(ctx, http.MethodGet, "/Users", nil, nil, &users); err != nil {
 		return nil, false, err
 	}
-	for _, u := range users {
-		if strings.EqualFold(u.ID, id) {
-			uu := u
-			return &uu, true, nil
+	for i := range users {
+		if strings.EqualFold(users[i].ID, id) || users[i].Name == id {
+			return &users[i], true, nil
 		}
 	}
 	return nil, false, nil
@@ -228,7 +247,7 @@ func (c *Client) SetUserDisabled(ctx context.Context, id string, disabled bool) 
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("Jellyfin 用户不存在 id=%s", id)
+		return fmt.Errorf("%w id=%s", ErrUserNotFound, id)
 	}
 	// 基于当前策略重建，只改 IsDisabled，避免其它字段被默认覆盖。
 	p := u.Policy
@@ -275,7 +294,7 @@ func (c *Client) ApplyLibAccess(ctx context.Context, userID string, la LibAccess
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("Jellyfin 用户不存在 id=%s", userID)
+		return fmt.Errorf("%w id=%s", ErrUserNotFound, userID)
 	}
 	p := u.Policy
 	p.EnableAllFolders = la.EnableAllFolders
@@ -300,7 +319,7 @@ func (c *Client) GetUserConfiguration(ctx context.Context, userID string) (map[s
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("Jellyfin 用户不存在 id=%s", userID)
+		return nil, fmt.Errorf("%w id=%s", ErrUserNotFound, userID)
 	}
 	if u.Configuration == nil {
 		return map[string]any{}, nil
@@ -399,7 +418,7 @@ func (c *Client) MaxActiveSessions(ctx context.Context, userID string) (int, err
 		return 0, err
 	}
 	if !ok {
-		return 0, fmt.Errorf("Jellyfin 用户不存在 id=%s", userID)
+		return 0, fmt.Errorf("%w id=%s", ErrUserNotFound, userID)
 	}
 	return u.Policy.MaxActiveSessions, nil
 }

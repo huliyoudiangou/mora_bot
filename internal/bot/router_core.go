@@ -181,9 +181,10 @@ func (r *Router) dispatchCommand(ctx context.Context, cmd string, args []string,
 	case "/cancel":
 		// 所有向导提示"回复 /cancel 可取消"：/cancel 以 / 开头必然走命令路径，
 		// 必须在这里清会话，否则各会话 step 里的 isCancelText 分支永远不可达。
-		// 同步清除媒体库批量应用的待确认状态与编辑器暂存。
+		// 同步清除媒体库批量应用的待确认状态、编辑器暂存与失败重试清单。
 		setLibConfirmPending(msg.From.ID, false)
 		libEditors.drop(msg.From.ID)
+		dropLibRetryEntry(msg.From.ID)
 		if r.deps.Sessions != nil && r.deps.Sessions.Current(msg.From.ID) != nil {
 			r.deps.Sessions.Clear(msg.From.ID)
 			sendText(ctx, r.deps, msg.ChatID, "已取消当前操作。")

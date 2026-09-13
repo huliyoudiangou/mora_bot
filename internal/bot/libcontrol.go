@@ -3,7 +3,9 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -169,7 +171,11 @@ func listVirtualFoldersCached(ctx context.Context, deps *HandlerDeps) ([]jellyfi
 	return folders, nil
 }
 
-// applyLibAccessToUser 对单个用户套用库访问（管理员跳过；无生效配置跳过）。
+// applyLibAccessToUser 对单个用户套用库访问：读当前 Policy → 只改库访问三项字段
+// → 写回（与 ApplyLibAccess 同模式，避免覆盖用户其它设置）。
+// 管理员检查内联（跳过 Jellyfin 管理员账户）：旧实现把「查管理员」与
+//「ApplyLibAccess 内部再读一次用户」拆成两次 API 调用（且 GetUser 走全量列表），
+// 批量应用每用户 2 次全量拉取，用户多时又慢又易超时——是「跑到一半没汇报」的根因。
 // 返回 (applied, skipped 原因, error)。
 func applyLibAccessToUser(ctx context.Context, deps *HandlerDeps, u db.User, template *jellyfin.LibAccess) (bool, string, error) {
 	if deps.JF == nil {
@@ -182,89 +188,395 @@ func applyLibAccessToUser(ctx context.Context, deps *HandlerDeps, u db.User, tem
 	if la == nil {
 		return false, "无模板基线", nil
 	}
-	if err := deps.JF.ApplyLibAccess(ctx, u.JellyfinUserID, *la); err != nil {
+	ju, found, err := deps.JF.GetUser(ctx, u.JellyfinUserID)
+	if err != nil {
+		return false, "", err
+	}
+	if !found {
+		return false, "", fmt.Errorf("%w id=%s", jellyfin.ErrUserNotFound, u.JellyfinUserID)
+	}
+	if ju.Policy.IsAdministrator {
+		return false, "Jellyfin 管理员", nil
+	}
+	p := ju.Policy
+	p.EnableAllFolders = la.EnableAllFolders
+	if la.EnableAllFolders {
+		p.EnabledFolders = nil // 全库模式下列表清空，避免残留失效引用
+	} else if len(la.EnabledFolders) == 0 {
+		p.EnabledFolders = []string{}
+	} else {
+		p.EnabledFolders = la.EnabledFolders
+	}
+	p.MaxActiveSessions = la.MaxActiveSessions
+	if err := deps.JF.UpdateUserPolicy(ctx, u.JellyfinUserID, p); err != nil {
 		return false, "", err
 	}
 	return true, "", nil
 }
 
 // applyLibAccessToAll 把库访问批量套用到全部本地绑定用户（模板基线/白名单覆盖各自生效）。
-// 顺序执行（Jellyfin 侧写压力大），结果汇报给管理员；失败列表截前 failShow 个。
-// 应放 goroutine 异步执行（百余用户 × 2 次调用较耗时），不阻塞消息处理。
-func applyLibAccessToAll(ctx context.Context, deps *HandlerDeps, adminID int64) {
+// targets 非空时只处理指定 tg_id（失败用户重试路径），空=全体绑定用户。
+// 顺序执行（Jellyfin 侧写压力大），每用户带自动重试（网络类瞬时失败重试
+// libRetryAttempts 次，避免单次网络抖动把用户算进失败），最终必达汇报：
+//   - 汇报用独立上下文发送（runCtx 超时/取消后仍能送达——旧实现用 runCtx 发
+//     完成消息，批量一超时消息就发不出去且错误被忽略，管理员永远等不到「执行完毕」）；
+//   - goroutine 异常（panic）也兜底发一条失败提示，保证「执行完必有回应」；
+//   - 未同步的用户全部罗列：跳过用户（管理员/无基线，逐个列原因）与失败用户
+//     （tg+原因），不再只给一个跳过总数；
+//   - 有失败时把失败清单存入内存（libRetryEntries），发送带「🔁 重试失败用户」
+//     按钮的汇报，管理员可一键只对失败用户重新执行。
+// 应放 goroutine 异步执行，不阻塞消息处理。
+func applyLibAccessToAll(ctx context.Context, deps *HandlerDeps, adminID int64, targets []int64) {
+	// panic 兜底：异步任务任何异常都要给管理员一条回应，不能静默消失。
+	defer func() {
+		if p := recover(); p != nil {
+			sendDetachedText(deps, adminID, "❌ 批量应用异常终止，请重试或查看服务日志。")
+		}
+	}()
 	// 独立超时上下文：批量应用不随触发消息的 handler context 取消而中断。
 	runCtx, cancel := context.WithTimeout(context.Background(), applyLibTimeout)
 	defer cancel()
 
 	template := templateLibAccess(runCtx, deps)
 	if template == nil {
-		sendText(runCtx, deps, adminID, "❌ 批量应用取消：模板用户未配置或读取失败，无法得到基线配置。")
+		sendDetachedText(deps, adminID, "❌ 批量应用取消：模板用户未配置或读取失败，无法得到基线配置。")
 		return
 	}
 	var users []db.User
-	if err := deps.DB.Where("jellyfin_user_id <> ''").Find(&users).Error; err != nil {
-		sendText(runCtx, deps, adminID, "❌ 批量应用失败：查询用户列表出错。")
+	if len(targets) > 0 {
+		if err := deps.DB.Where("jellyfin_user_id <> '' AND telegram_id IN ?", targets).Find(&users).Error; err != nil {
+			sendDetachedText(deps, adminID, "❌ 批量应用失败：查询用户列表出错。")
+			return
+		}
+	} else if err := deps.DB.Where("jellyfin_user_id <> ''").Find(&users).Error; err != nil {
+		sendDetachedText(deps, adminID, "❌ 批量应用失败：查询用户列表出错。")
 		return
 	}
-	var okN, skipN, failN int
-	var failed []string
+	// 未绑定的本地用户不在同步范围（无 JF 账号可写）：单独计数透明化，
+	// 否则「这次还有谁没被同步」对管理员是个黑盒（仅全体运行时统计，重试运行不掺入）。
+	var unbound int64
+	if len(targets) == 0 {
+		_ = deps.DB.Model(&db.User{}).Where("jellyfin_user_id = ''").Count(&unbound).Error
+	}
+	var okN, skipN int
+	var skips []libSkipEntry
+	var fails []libFailEntry
 	var consecFails int
+	processed := 0
+	aborted := false
 	for _, u := range users {
 		// 连续失败快速中止：Jellyfin 整体不可达时逐用户重试没有意义，
-		// 每次还要等 15s 客户端超时，连续 5 个失败提前结束并汇报（可稍后重试）。
-		if consecFails >= 5 {
-			sendText(runCtx, deps, adminID, "❌ 批量应用中止：连续多个用户处理失败，Jellyfin 服务可能不可达，请稍后重试。")
+		// 每次还要等 15s 客户端超时，连续多个失败提前结束并汇报（可稍后重试）。
+		if consecFails >= libConsecFailAbort {
+			aborted = true
 			break
 		}
-		// 与覆盖套用互斥：批量写 Policy 期间不允许覆盖保存/清除并发写同一用户。
-		libApplyMu.Lock()
-		// Jellyfin 侧管理员账户永远跳过：bot 不碰管理员的库权限。
-		if ju, found, err := deps.JF.GetUser(runCtx, u.JellyfinUserID); err == nil && found && ju.Policy.IsAdministrator {
-			libApplyMu.Unlock()
-			skipN++
-			continue
-		}
-		applied, _, err := applyLibAccessToUser(runCtx, deps, u, template)
-		libApplyMu.Unlock()
+		processed++
+		applied, skipReason, err := applyLibAccessWithRetry(runCtx, deps, u, template)
 		switch {
 		case err != nil:
-			failN++
 			consecFails++
-			if len(failed) < failListMax {
-				failed = append(failed, fmt.Sprintf("tg=%d", u.TelegramID))
-			}
+			fails = append(fails, libFailEntry{TG: u.TelegramID, JFUser: u.JellyfinUsername, Reason: jellyfinErrDetail(err)})
 		case applied:
 			okN++
 			consecFails = 0
 		default:
 			skipN++
 			consecFails = 0
+			// 跳过也要留名留原因：旧实现把跳过原因丢弃，管理员只看到总数
+			// 却不知道谁被跳过、为什么被跳过。
+			skips = append(skips, libSkipEntry{TG: u.TelegramID, JFUser: u.JellyfinUsername, Reason: skipReason})
 		}
 	}
-	if consecFails >= 5 {
+	if aborted {
+		// 中止时未处理的用户（中止点之后的）进失败/重试清单，否则「重试失败用户」
+		// 会漏掉他们；已成功/已跳过的用户不重复计入失败（重试幂等但汇报会误导）。
+		for _, u := range users[processed:] {
+			fails = append(fails, libFailEntry{TG: u.TelegramID, JFUser: u.JellyfinUsername, Reason: "未处理（连续失败中止）"})
+		}
+		failN := len(fails)
 		_ = db.WriteAudit(deps.DB, adminID, "admin_lib_apply_all", "jellyfin_policy", "all_users",
-			fmt.Sprintf("批量应用库访问中止（连续失败）：成功 %d，跳过 %d，失败 %d", okN, skipN, failN))
+			fmt.Sprintf("批量应用库访问中止（连续失败）：成功 %d，跳过 %d，失败 %d：%s",
+				okN, skipN, failN, libFailAuditText(fails)))
+		sendDetachedText(deps, adminID, "❌ 批量应用中止：连续多个用户处理失败，Jellyfin 服务可能不可达。已保存失败清单，可用下方按钮重试失败用户。")
+		sendLibApplyReport(deps, adminID, okN, skipN, skips, fails, true, unbound)
 		return
 	}
+	failN := len(fails)
 	_ = db.WriteAudit(deps.DB, adminID, "admin_lib_apply_all", "jellyfin_policy", "all_users",
-		fmt.Sprintf("批量应用库访问：成功 %d，跳过 %d（管理员/未绑定/无基线），失败 %d", okN, skipN, failN))
-	var b strings.Builder
-	b.WriteString("📚 批量应用完成\n\n")
-	b.WriteString(fmt.Sprintf("✅ 成功：%d 人\n⏭ 跳过：%d 人（Jellyfin 管理员/未绑定/无基线）\n❌ 失败：%d 人", okN, skipN, failN))
-	if len(failed) > 0 {
-		b.WriteString("\n\n失败列表：" + strings.Join(failed, "、"))
-		if failN > failListMax {
-			b.WriteString(fmt.Sprintf(" 等共 %d 人", failN))
-		}
-	}
-	sendText(runCtx, deps, adminID, b.String())
+		fmt.Sprintf("批量应用库访问：成功 %d，跳过 %d（管理员/无基线）：%s，失败 %d%s",
+			okN, skipN, libSkipAuditText(skips), failN, libFailAuditSuffix(fails)))
+	sendLibApplyReport(deps, adminID, okN, skipN, skips, fails, false, unbound)
 }
 
-// applyLibTimeout 批量应用的执行上限（每用户约 2 次 API 调用，15s 客户端超时）。
-const applyLibTimeout = 10 * time.Minute
+// applyLibAccessWithRetry 带自动重试的单用户套用：网络类瞬时失败（连接错误/
+// 5xx/429/429 限流）重试至多 libRetryAttempts 次（间隔递增），避免单次网络抖动
+// 把用户算进失败；用户不存在等永久性错误不重试（重试无意义）。
+// 重试期间持 libApplyMu（与覆盖套用互斥），整个「读-改-写」原子。
+func applyLibAccessWithRetry(ctx context.Context, deps *HandlerDeps, u db.User, template *jellyfin.LibAccess) (bool, string, error) {
+	// 与覆盖套用互斥：批量写 Policy 期间不允许覆盖保存/清除并发写同一用户。
+	libApplyMu.Lock()
+	defer libApplyMu.Unlock()
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		applied, skipReason, err := applyLibAccessToUser(ctx, deps, u, template)
+		if err == nil {
+			return applied, skipReason, nil
+		}
+		lastErr = err
+		if errors.Is(err, jellyfin.ErrUserNotFound) || !isTransientJFErr(err) || attempt >= libRetryAttempts-1 {
+			return false, "", lastErr
+		}
+		// 指数退避：2s, 4s, 8s...；ctx 取消（批量超时）立即放弃
+		select {
+		case <-ctx.Done():
+			return false, "", lastErr
+		case <-time.After(libRetryBackoff << attempt):
+		}
+	}
+}
 
-// failListMax 批量结果中失败 tg_id 最多列出的人数。
+// isTransientJFErr 网络类瞬时错误判定：连接失败/超时、5xx、429 可重试；
+// 4xx（参数/权限类）重试无意义。
+func isTransientJFErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ne *jellyfin.APIError
+	if errors.As(err, &ne) {
+		return ne.Status >= http.StatusInternalServerError || ne.Status == http.StatusTooManyRequests
+	}
+	// 连接层错误（"连接 Jellyfin 失败: ..."）全部视为瞬时
+	return strings.Contains(err.Error(), "连接 Jellyfin 失败")
+}
+
+// libFailEntry 批量应用的单个失败记录（tg + JF 用户名 + 原因）。
+type libFailEntry struct {
+	TG     int64
+	JFUser string
+	Reason string
+}
+
+// libSkipEntry 批量应用的单个跳过记录（tg + JF 用户名 + 原因）。
+type libSkipEntry struct {
+	TG     int64
+	JFUser string
+	Reason string
+}
+
+// jellyfinErrDetail 失败原因的简短描述（管理员可见，非普通用户）：
+// 连接层给类别，API 错误给状态码，用户不存在给明确提示。
+func jellyfinErrDetail(err error) string {
+	switch {
+	case err == nil:
+		return "未知错误"
+	case errors.Is(err, jellyfin.ErrUserNotFound):
+		return "Jellyfin 用户不存在（本地档案残留）"
+	default:
+		var ne *jellyfin.APIError
+		if errors.As(err, &ne) {
+			return fmt.Sprintf("Jellyfin %s %d", ne.Method, ne.Status)
+		}
+		if isTransientJFErr(err) {
+			return "网络错误/超时"
+		}
+		return truncateRunes(err.Error(), 60)
+	}
+}
+
+// libFailAuditText 失败明细的完整审计串（截断到审计列 512 上限内）。
+func libFailAuditText(fails []libFailEntry) string {
+	parts := make([]string, 0, len(fails))
+	for _, f := range fails {
+		parts = append(parts, fmt.Sprintf("tg=%d(%s):%s", f.TG, f.JFUser, f.Reason))
+	}
+	return truncateRunes(strings.Join(parts, "；"), 400)
+}
+
+// libFailAuditSuffix 非中止路径的审计失败明细后缀（无失败为空）。
+func libFailAuditSuffix(fails []libFailEntry) string {
+	if len(fails) == 0 {
+		return ""
+	}
+	return "：" + libFailAuditText(fails)
+}
+
+// libSkipAuditText 跳过明细的完整审计串（截断到审计列 512 上限内）。
+func libSkipAuditText(skips []libSkipEntry) string {
+	if len(skips) == 0 {
+		return "无"
+	}
+	parts := make([]string, 0, len(skips))
+	for _, s := range skips {
+		parts = append(parts, fmt.Sprintf("tg=%d(%s):%s", s.TG, s.JFUser, s.Reason))
+	}
+	return truncateRunes(strings.Join(parts, "；"), 300)
+}
+
+// sendLibApplyReport 发送批量应用最终汇报（必达：独立上下文，不依赖 runCtx）。
+// 成功不逐个展示；跳过用户逐个列出（tg+原因，截前 skipListMax 个）；
+// 失败列出 tg+原因（截前 failListMax 个）；有失败时附「🔁 重试失败用户」按钮
+//（失败清单已存 libRetryEntries）。
+func sendLibApplyReport(deps *HandlerDeps, adminID int64, okN, skipN int, skips []libSkipEntry, fails []libFailEntry, aborted bool, unbound int64) {
+	failN := len(fails)
+	var b strings.Builder
+	b.WriteString("📚 <b>批量应用完成</b>\n\n")
+	if aborted {
+		b.WriteString("⚠️ 执行中止（Jellyfin 连续失败），以下为已完成/未同步统计：\n")
+	}
+	b.WriteString(fmt.Sprintf("✅ 成功：%d 人\n❌ 失败：%d 人\n⏭ 跳过：%d 人（Jellyfin 管理员/无模板基线）", okN, failN, skipN))
+	if !aborted && unbound > 0 {
+		b.WriteString(fmt.Sprintf("\nℹ️ 未绑定：%d 人（无 Jellyfin 账号，不在同步范围）", unbound))
+	}
+	if skipN > 0 && len(skips) > 0 {
+		b.WriteString("\n\n<b>跳过用户：</b>\n")
+		for i, s := range skips {
+			if i >= skipListMax {
+				b.WriteString(fmt.Sprintf("…等共 %d 人（完整清单见审计日志）\n", skipN))
+				break
+			}
+			name := s.JFUser
+			if strings.TrimSpace(name) == "" {
+				name = "-"
+			}
+			b.WriteString(fmt.Sprintf("· tg=%d（%s）：%s\n", s.TG, escapeHTML(name), escapeHTML(s.Reason)))
+		}
+	}
+	if failN > 0 {
+		b.WriteString("\n\n<b>失败用户：</b>\n")
+		for i, f := range fails {
+			if i >= failListMax {
+				b.WriteString(fmt.Sprintf("…等共 %d 人（完整清单见审计日志）\n", failN))
+				break
+			}
+			name := f.JFUser
+			if strings.TrimSpace(name) == "" {
+				name = "-"
+			}
+			b.WriteString(fmt.Sprintf("· tg=%d（%s）：%s\n", f.TG, escapeHTML(name), escapeHTML(f.Reason)))
+		}
+	}
+	rows := make([][]KeyboardButton, 0, 2)
+	if failN > 0 && setLibRetryEntry(adminID, fails) {
+		rows = append(rows, []KeyboardButton{{
+			Text: fmt.Sprintf("🔁 重试失败用户（%d）", failN),
+			Data: BuildCallbackData(DKAdmin, "lib:retry"),
+		}})
+	}
+	rows = append(rows, []KeyboardButton{
+		{Text: "↩️ 返回媒体库面板", Data: BuildCallbackData(DKAdmin, "lib")},
+	})
+	sendPanel(context.Background(), deps, adminID, 0, b.String(), rows)
+}
+
+// applyLibTimeout 批量应用的执行上限（每用户 2 次 API 调用 + 重试退避）。
+const applyLibTimeout = 15 * time.Minute
+
+// libRetryAttempts 网络类瞬时失败的单用户自动重试次数（含首次）。
+const libRetryAttempts = 3
+
+// libRetryBackoff 重试基础退避（2s, 4s, ... 指数递增）。
+const libRetryBackoff = 2 * time.Second
+
+// libConsecFailAbort 连续失败中止阈值（Jellyfin 整体不可达时提前结束）。
+const libConsecFailAbort = 5
+
+// failListMax 汇报中失败明细最多列出的人数。
 const failListMax = 20
+
+// skipListMax 汇报中跳过明细最多列出的人数（与失败同上限，完整清单见审计日志）。
+const skipListMax = 20
+
+// sendDetachedText 用独立上下文发送文本（批量应用等异步任务的最终汇报必达：
+// runCtx 已超时/取消时 sendMessage 会立即失败且错误被忽略——旧实现正是因此
+// 管理员永远等不到「执行完毕」的汇报）。
+func sendDetachedText(deps *HandlerDeps, chatID int64, text string) {
+	if deps == nil || deps.Snd == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = deps.Snd.SendText(ctx, chatID, text)
+}
+
+// libRetryEntries 失败用户清单（adminID → 清单 + 时间；30 分钟 TTL，
+// 与编辑器/确认状态一致）。管理员点「🔁 重试失败用户」时取用。
+var (
+	libRetryEntries   = map[int64]libRetryEntry{}
+	libRetryEntriesMu sync.Mutex
+)
+
+// libRetryEntry 一次批量应用的失败清单。
+type libRetryEntry struct {
+	Fails    []libFailEntry
+	StoredAt time.Time
+}
+
+// libRetryTTL 失败清单的存活时长（与会话/编辑器一致）。
+const libRetryTTL = 30 * time.Minute
+
+// setLibRetryEntry 存失败清单（旧清单覆盖）。返回是否成功存储。
+func setLibRetryEntry(adminID int64, fails []libFailEntry) bool {
+	if len(fails) == 0 {
+		return false
+	}
+	libRetryEntriesMu.Lock()
+	defer libRetryEntriesMu.Unlock()
+	c := make([]libFailEntry, len(fails))
+	copy(c, fails)
+	libRetryEntries[adminID] = libRetryEntry{Fails: c, StoredAt: time.Now()}
+	return true
+}
+
+// takeLibRetryEntry 取失败清单（重试路径用）：无/已过期返回 nil。
+// 过期即清除（惰性，与编辑器同模式）。
+func takeLibRetryEntry(adminID int64) []int64 {
+	libRetryEntriesMu.Lock()
+	defer libRetryEntriesMu.Unlock()
+	e, ok := libRetryEntries[adminID]
+	if !ok {
+		return nil
+	}
+	if time.Since(e.StoredAt) > libRetryTTL {
+		delete(libRetryEntries, adminID)
+		return nil
+	}
+	tgs := make([]int64, 0, len(e.Fails))
+	for _, f := range e.Fails {
+		tgs = append(tgs, f.TG)
+	}
+	return tgs
+}
+
+// dropLibRetryEntry 清除失败清单（/cancel 等显式放弃路径用）。
+func dropLibRetryEntry(adminID int64) {
+	libRetryEntriesMu.Lock()
+	defer libRetryEntriesMu.Unlock()
+	delete(libRetryEntries, adminID)
+}
+
+// libRetryBusy 重试执行中的标志（防同一管理员重复点重试并发跑两轮）。
+var libRetryBusySet = map[int64]bool{}
+
+// setLibRetryBusy 标记重试开始（已在执行返回 false）。
+func setLibRetryBusy(adminID int64) bool {
+	libRetryEntriesMu.Lock()
+	defer libRetryEntriesMu.Unlock()
+	if libRetryBusySet[adminID] {
+		return false
+	}
+	libRetryBusySet[adminID] = true
+	return true
+}
+
+// clearLibRetryBusy 清除重试执行标志（重试完成后调用）。
+// 只清标志，不清失败清单：重试若仍有失败，applyLibAccessToAll 会用新一轮
+// 结果覆盖失败清单，「🔁 重试失败用户」按钮保持可用。
+func clearLibRetryBusy(adminID int64) {
+	libRetryEntriesMu.Lock()
+	defer libRetryEntriesMu.Unlock()
+	delete(libRetryBusySet, adminID)
+}
 
 // ---------------------------------------------------------------------------
 // 白名单覆盖的套用与清除
@@ -823,8 +1135,34 @@ func (r *Router) handleAdminLibCallback(ctx context.Context, deps *HandlerDeps, 
 			setLibConfirmPending(cq.From.ID, true)
 			sendHTML(ctx, deps, cq.ChatID, fmt.Sprintf(
 				"⚠️ <b>批量应用库访问</b>\n\n将按当前模板基线覆盖 <b>%d</b> 个本地绑定用户的库访问与并发上限（白名单单独覆盖不受影响，Jellyfin 管理员账户自动跳过）。\n\n"+
-					"注意：会覆盖用户在 Jellyfin 后台被手动修改的库权限。\n\n"+
+					"注意：会覆盖用户在 Jellyfin 后台被手动修改的库权限。\n"+
+					"执行完毕会汇报结果：跳过与失败的用户将逐个列出（含原因），失败用户可用按钮一键重试。\n\n"+
 					"回复「<b>确认</b>」开始执行，回复「<b>取消</b>」放弃。", boundCount))
+		case "retry":
+			// 重试失败用户：只处理上轮批量应用失败的 tg（来自 libRetryEntries）。
+			// 目标范围小且操作幂等（重复写同一 Policy 无害），无需二次确认；
+			// 直接异步执行，完成后同样汇报结果（成功/失败 + 失败原因 + 可再重试）。
+			if deps.JF == nil {
+				sendText(ctx, deps, cq.ChatID, "Jellyfin 未配置。")
+				return
+			}
+			targets := takeLibRetryEntry(cq.From.ID)
+			if len(targets) == 0 {
+				sendText(ctx, deps, cq.ChatID, "没有待重试的失败清单（可能已过期或上轮没有失败）。请重新点「🚀 应用到全体用户」。")
+				return
+			}
+			if !setLibRetryBusy(cq.From.ID) {
+				sendText(ctx, deps, cq.ChatID, "上一轮失败用户重试仍在进行中，请等待完成汇报。")
+				return
+			}
+			sendText(ctx, deps, cq.ChatID,
+				fmt.Sprintf("🔁 开始重试 %d 个失败用户，完成后汇报结果（执行期间请勿重复操作）。", len(targets)))
+			deps := deps
+			adminID := cq.From.ID
+			go func() {
+				defer clearLibRetryBusy(adminID)
+				applyLibAccessToAll(context.Background(), deps, adminID, targets)
+			}()
 		}
 	case "libt":
 		// 编辑器内切换某个库
@@ -872,10 +1210,10 @@ func (r *Router) handleAdminLibConfirmStep(ctx context.Context, msg *Message) bo
 	case strings.EqualFold(t, "确认"), strings.EqualFold(t, "confirm"):
 		setLibConfirmPending(msg.From.ID, false)
 		sendText(ctx, r.deps, msg.ChatID, "🚀 开始批量应用库访问，完成后汇报结果（执行期间请勿重复操作）。")
-		// 异步执行：百余用户 × 2 次 API 调用较耗时，不阻塞消息处理。
+		// 异步执行：每用户 2 次 API 调用 + 重试退避较耗时，不阻塞消息处理。
 		deps := r.deps
 		adminID := msg.From.ID
-		go applyLibAccessToAll(context.Background(), deps, adminID)
+		go applyLibAccessToAll(context.Background(), deps, adminID, nil)
 	case strings.EqualFold(t, "取消"), strings.EqualFold(t, "cancel"):
 		setLibConfirmPending(msg.From.ID, false)
 		sendText(ctx, r.deps, msg.ChatID, "已取消批量应用。")
