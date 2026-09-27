@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"mora_bot/internal/codes"
 	"mora_bot/internal/db"
@@ -99,6 +100,10 @@ func (r *Router) handleAdminQueryUserStep(ctx context.Context, msg *Message) {
 	expire := "无"
 	if u.ExpireAt != nil {
 		expire = u.ExpireAt.Format("2006-01-02")
+	}
+	if u.IsPermanent {
+		// 白名单用户不存在到期时间（提权时已清空），与"白名单：是"并排显示到期日会误导管理员。
+		expire = "无（白名单永久）"
 	}
 	sec := "否"
 	if u.SecurityCodeHash != "" {
@@ -252,6 +257,17 @@ func (r *Router) handleAdminWLStep(ctx context.Context, msg *Message) {
 			sendText(ctx, deps, msg.ChatID, "移除白名单失败："+err.Error())
 			return
 		}
+		// 白名单期间的到期时间已在提权时清空，移除后要让用户回到"受规则约束"的状态：
+		// expire_at 为空会被 IsExpired 判定为永不过期，等于白名单权限没真正收回。
+		// 按 NEW_ACCOUNT_VALID_DAYS 补一个（0=不过期，与新注册语义一致）。
+		if u.ExpireAt == nil && deps.NewAccountValidDays > 0 {
+			ne := time.Now().AddDate(0, 0, deps.NewAccountValidDays)
+			if err := deps.DB.Model(&u).Update("expire_at", ne).Error; err != nil {
+				sendText(ctx, deps, msg.ChatID, "已移除白名单，但到期时间恢复失败，请用续期码或手动处理。")
+				return
+			}
+			u.ExpireAt = &ne
+		}
 		// 同步清空单独库/并发覆盖：覆盖仅对白名单用户生效（生效链按 is_permanent
 		// 解释），移除后残留的 jelly_lib_override 会被批量应用误套用，必须清掉。
 		// 再按模板基线重套一次，立即收回原白名单持有的覆盖权限（失败仅提示，管理员可批量应用兜底）。
@@ -268,18 +284,29 @@ func (r *Router) handleAdminWLStep(ctx context.Context, msg *Message) {
 			}
 		}
 		_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_whitelist_del", "user", itoa64s(tgID), "移除白名单")
-		sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 已移除白名单：tg=%d（恢复受规则约束，库访问已恢复跟随模板基线）", tgID))
+		resp := fmt.Sprintf("✅ 已移除白名单：tg=%d（恢复受规则约束，库访问已恢复跟随模板基线）", tgID)
+		if u.ExpireAt != nil {
+			resp += "\n到期时间：" + u.ExpireAt.Format("2006-01-02")
+		} else {
+			resp += "\n该用户当前无到期时间（不过期），如需限制请用续期码或手动设置。"
+		}
+		sendText(ctx, deps, msg.ChatID, resp)
 	default: // add
 		err := deps.DB.Model(&u).Updates(map[string]any{
 			"is_permanent": true,
 			"status":       db.UserStatusActive,
+			// 提权即永久：同时清空原到期时间。残留的 expire_at 会带来三类问题——
+			// ① 管理员查询卡片出现"白名单：是"却仍显示到期日的矛盾信息，容易混淆；
+			// ② 一旦移除白名单，旧到期时间会"复活"，用户会再次收到到期提醒；
+			// ③ 任何按 ExpireAt 判断的路径都可能对白名单用户误判。
+			"expire_at": nil,
 		}).Error
 		if err != nil {
 			sendText(ctx, deps, msg.ChatID, "添加白名单失败："+err.Error())
 			return
 		}
 		_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_whitelist_add", "user", itoa64s(tgID), "添加白名单")
-		sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 已添加白名单：tg=%d（永久有效，不受规则约束，无需保号）", tgID))
+		sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 已添加白名单：tg=%d（永久有效，不受规则约束，无需保号；原到期时间已清除，不会再收到到期提醒）", tgID))
 	}
 }
 

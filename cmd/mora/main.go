@@ -53,6 +53,17 @@ func main() {
 	}
 	lg.Info("数据库已就绪", "path", cfg.DatabaseURL)
 
+	// 白名单用户不存在"到期时间"：清理历史残留（提权早于本版本时留下的 expire_at）。
+	// 残留会让管理员查询卡片出现"白名单：是"却仍显示到期日的矛盾信息，并可能在移除白名单后
+	// 让旧到期时间"复活"，使白名单用户再次收到到期提醒。启动时一次性清干净（幂等）。
+	if res := gdb.Model(&db.User{}).
+		Where("is_permanent = ? AND expire_at IS NOT NULL", true).
+		Update("expire_at", nil); res.Error != nil {
+		lg.Warn("清理白名单残留到期时间失败", "err", res.Error)
+	} else if res.RowsAffected > 0 {
+		lg.Info("已清理白名单用户的残留到期时间", "rows", res.RowsAffected)
+	}
+
 	// -------- Jellyfin --------
 	var jf *jellyfin.Client
 	if cfg.JellyfinURL != "" && cfg.JellyfinAPIKey != "" {

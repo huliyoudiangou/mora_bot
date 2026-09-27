@@ -351,18 +351,23 @@ func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot
 					delete(sent, id)
 				}
 			}
-			// 即将到期：expire_at 在 [now, now+notifyBeforeDays] 区间，且未永久
+			// 即将到期：expire_at 在 [now, now+notifyBeforeDays] 区间，且未永久。
+			// 白名单用户在提权时已清空 expire_at（见 admin_whitelist_add），这里再显式
+			// 排除永久标记与空到期时间，双重保险，避免历史脏数据导致误提醒。
 			from := scan
 			to := scan.AddDate(0, 0, notifyBeforeDays)
 			var users []struct {
-				TelegramID int64
-				ExpireAt   *time.Time
+				TelegramID  int64
+				ExpireAt    *time.Time
+				IsPermanent bool
 			}
 			_ = gdb.Model(&db.User{}).
-				Where("is_permanent = ? AND expire_at >= ? AND expire_at <= ? AND status = ?", false, from, to, "active").
+				Select("telegram_id", "expire_at", "is_permanent").
+				Where("is_permanent = ? AND expire_at IS NOT NULL AND expire_at >= ? AND expire_at <= ? AND status = ?", false, from, to, "active").
 				Find(&users).Error
 			for _, u := range users {
-				if u.ExpireAt == nil {
+				// 二次校验：查询条件之外再挡一道（白名单/无到期时间一律不提醒）。
+				if u.ExpireAt == nil || u.IsPermanent {
 					continue
 				}
 				if prev, ok := sent[u.TelegramID]; ok && prev == today {
