@@ -45,17 +45,20 @@ func (r *Router) cmdAdmin(ctx context.Context, msg *Message, args []string) {
 // handleAdminStats /admin stats 汇总。
 func (r *Router) handleAdminStats(ctx context.Context, msg *Message) {
 	deps := r.deps
-	var total, bound, pointsUsers int64
+	var total, bound, pointsUsers, expired, perms int64
 	deps.DB.Model(&db.User{}).Count(&total)
 	deps.DB.Model(&db.User{}).Where("jellyfin_user_id <> ''").Count(&bound)
 	deps.DB.Model(&db.User{}).Where("guo_guo > 0").Count(&pointsUsers)
+	// 到期停用人数与白名单人数：运营视角关注"多少人被停用、多少人是永久"。
+	deps.DB.Model(&db.User{}).Where("status = ?", db.UserStatusExpired).Count(&expired)
+	deps.DB.Model(&db.User{}).Where("is_permanent = ?", true).Count(&perms)
 	var inviteUnused, renewalUnused int64
 	// 按 status 统计：revoked（已作废）的码 used_by 为空，但不应计入"未用"。
 	deps.DB.Model(&db.InviteCode{}).Where("status = ?", db.CodeStatusUnused).Count(&inviteUnused)
 	deps.DB.Model(&db.RenewalCode{}).Where("status = ?", db.CodeStatusUnused).Count(&renewalUnused)
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
-		"<b>全局统计</b>\n\n用户：%d（已绑定 %d / 有余额 %d）\n邀请码未用：%d\n续期码未用：%d",
-		total, bound, pointsUsers, inviteUnused, renewalUnused))
+		"<b>全局统计</b>\n\n用户：%d（已绑定 %d / 有余额 %d）\n已到期停用：%d　白名单：%d\n邀请码未用：%d\n续期码未用：%d",
+		total, bound, pointsUsers, expired, perms, inviteUnused, renewalUnused))
 }
 
 // handleAdminGenCode /admin gencode <数量> [invite|renewal] [天数]

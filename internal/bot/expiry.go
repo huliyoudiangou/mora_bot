@@ -9,9 +9,10 @@ import (
 
 // ExpireSweep 一次到期巡检的结果（供日志/汇报）。
 type ExpireSweep struct {
-	Disabled []int64 // 本次被停用的 tg_id
-	Restored []int64 // 本次被恢复的 tg_id
-	Failed   int     // Jellyfin 调用失败数（本地状态未变，下次巡检重试）
+	Disabled  []int64 // 本次被停用的 tg_id
+	Restored  []int64 // 本次被恢复的 tg_id
+	Failed    int     // Jellyfin 调用失败数（本地状态未变，下次巡检重试）
+	LoggedOut int     // 本次成功断开在线会话的账号数
 }
 
 // SweepExpiredAccounts 巡检一次订阅到期状态：
@@ -42,6 +43,11 @@ func SweepExpiredAccounts(ctx context.Context, deps *HandlerDeps) ExpireSweep {
 		if err := setJFDisabled(ctx, deps, u.JellyfinUserID, true); err != nil {
 			res.Failed++
 			continue
+		}
+		// 禁用只拦新登录：已签发的 token 仍可继续播放，必须同时踢掉在线会话，
+		// 停用才算真正落地。踢会话失败不影响停用本身（账号已禁用）。
+		if kicked, err := kickSessions(ctx, deps, u.JellyfinUserID); err == nil && kicked {
+			res.LoggedOut++
 		}
 		r := deps.DB.Model(&db.User{}).
 			Where("telegram_id = ? AND status = ?", u.TelegramID, db.UserStatusActive).
@@ -111,6 +117,19 @@ func setJFDisabled(ctx context.Context, deps *HandlerDeps, jfUserID string, disa
 		return nil
 	}
 	return deps.JF.SetUserDisabled(ctx, jfUserID, disabled)
+}
+
+// kickSessions 踢掉该用户在 Jellyfin 的全部在线会话（返回是否确实清理了会话）。
+// 未配置 Jellyfin 或用户未绑定时视为无需处理。
+func kickSessions(ctx context.Context, deps *HandlerDeps, jfUserID string) (bool, error) {
+	if deps.JF == nil || jfUserID == "" {
+		return false, nil
+	}
+	n, err := deps.JF.LogoutAllDevices(ctx, jfUserID)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // notifyUserText 私聊通知用户。用独立上下文发送：调用方的 ctx 可能已取消/超时，

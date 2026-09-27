@@ -67,7 +67,7 @@ docker compose restart
 | 启动通知 | 进程启动后私聊所有管理员 | `BOT_STARTUP_NOTIFY_ADMINS=true` |
 | 每日自动备份 | 每日在指定小时备份 SQLite（可选加密、可选推送到群），保留 N 份 | `BACKUP_DAILY_HOUR=3` / `BACKUP_KEEP_COUNT=14` / `BACKUP_ENCRYPT_KEY` / `BACKUP_GROUP_ID` |
 | 到期提醒 | 每天扫描即将到期的用户并私聊提醒续费（白名单用户与无到期时间的用户不提醒） | `NOTIFY_BEFORE_DAYS=3`（0=关闭） |
-| 到期停用 | 每天巡检：已到期账号自动停用（Jellyfin 禁用 + 私聊通知），续期或加入白名单后自动恢复 | `EXPIRE_AUTO_DISABLE=true`（false=只提醒不停用） |
+| 到期停用 | 每天巡检：已到期账号自动停用（Jellyfin 禁用 + 断开在线会话 + 私聊通知），续期或加入白名单后自动恢复 | `EXPIRE_AUTO_DISABLE=true`（false=只提醒不停用） |
 
 ## 完整环境变量（见 .env.example）
 

@@ -345,6 +345,7 @@ func startExpiryEnforcer(ctx context.Context, lg *slog.Logger, deps *bot.Handler
 				lg.Info("到期巡检完成",
 					"disabled", len(res.Disabled),
 					"restored", len(res.Restored),
+					"logged_out", res.LoggedOut,
 					"failed", res.Failed)
 			}
 		}
