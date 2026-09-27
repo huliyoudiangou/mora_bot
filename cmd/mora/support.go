@@ -275,12 +275,38 @@ func nextLocalHour(hour int) time.Time {
 	return next
 }
 
+// 每日任务在 system_configs 里的标识（用于"上次执行日期"判断，见 db.RanToday）。
+const (
+	dailyTaskBackup       = "daily_backup"
+	dailyTaskExpiryNotify = "daily_expiry_notify"
+)
+
+// 启动补跑前的等待时长。三个后台任务错开，避免启动瞬间一起抢 SQLite 写锁与带宽
+// （备份走 VACUUM INTO，与并发写同一库不友好）。均为变量便于测试覆盖。
+var (
+	startupBackupDelay = 30 * time.Second
+	startupNotifyDelay = 45 * time.Second
+	startupSweepDelay  = 60 * time.Second
+)
+
 // startDailyBackup 每日定时备份循环。hour=-1 关闭。
+//
+// 启动后补跑：定时器只在每天 hour 点触发，进程若活不到那一刻（或频繁重启），
+// 备份可能**永远不执行**。用 system_configs 里的"上次备份日期"判断今天是否已备份，
+// 今天没备份过才补跑 —— 不加这个判断会导致每次重启都多生成一份备份。
 func startDailyBackup(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *tgbotapi.Bot, cfgBackupHour int, dbPath, encKey string, keepCount int, groupID int64) {
 	if cfgBackupHour < 0 || cfgBackupHour > 23 {
 		return
 	}
 	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(startupBackupDelay):
+		}
+		if !db.RanToday(gdb, dailyTaskBackup) {
+			runBackupOnce(ctx, lg, gdb, bot, dbPath, encKey, keepCount, groupID)
+		}
 		for {
 			if ctx.Err() != nil {
 				return
@@ -290,14 +316,30 @@ func startDailyBackup(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *t
 				return
 			case <-time.After(time.Until(nextLocalHour(cfgBackupHour))):
 			}
-			name, err := backupDatabase(ctx, lg, gdb, bot, dbPath, encKey, keepCount, groupID)
-			if err != nil {
-				lg.Error("自动备份失败", "err", err)
-			} else if name != "" {
-				lg.Info("自动备份完成", "file", name)
+			// 今天已经备份过就跳过（例如启动补跑刚跑过），保证一天最多一份。
+			if db.RanToday(gdb, dailyTaskBackup) {
+				continue
 			}
+			runBackupOnce(ctx, lg, gdb, bot, dbPath, encKey, keepCount, groupID)
 		}
 	}()
+}
+
+// runBackupOnce 跑一次备份。**成功才标记"今天已备份"** —— 失败不标记，
+// 留给下一次机会（重启补跑或定时触发）重试。
+func runBackupOnce(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *tgbotapi.Bot, dbPath, encKey string, keepCount int, groupID int64) {
+	name, err := backupDatabase(ctx, lg, gdb, bot, dbPath, encKey, keepCount, groupID)
+	if err != nil {
+		lg.Error("自动备份失败", "err", err)
+		return
+	}
+	if name == "" {
+		return // gdb/dbPath 缺失，属于"无事可做"，不标记
+	}
+	if err := db.MarkRanToday(gdb, dailyTaskBackup); err != nil {
+		lg.Warn("记录备份执行日期失败", "err", err)
+	}
+	lg.Info("自动备份完成", "file", name)
 }
 
 // encryptBytes 用 XChaCha20-Poly1305 加密文件内容。密钥由 hkdf(BACKUP_ENCRYPT_KEY) 派生。
@@ -327,6 +369,10 @@ func encryptBytes(data []byte, key string) ([]byte, error) {
 // 启动后先补跑一次：定时器只在每天 hour 点触发，若进程在 hour 之后启动（或频繁重启），
 // 旧实现要一直等到"明天 hour 点"，巡检可能**永远不执行** —— 已到期的账号迟迟不被停用。
 // 补跑是幂等的（条件更新 + 状态机），且与手动巡检共用互斥锁，重复触发无副作用。
+//
+// 与备份/提醒刻意不同：这里**不用** db.RanToday 做"一天一次"去重。巡检天然幂等，
+// 而且"进程一启动就把积压的到期账号停掉"正是我们想要的 —— 一天跑几次没有副作用，
+// 反倒是越早停用越好。
 func startExpiryEnforcer(ctx context.Context, lg *slog.Logger, deps *bot.HandlerDeps, enabled bool, hour int) {
 	if !enabled || deps == nil || deps.DB == nil {
 		return
@@ -358,9 +404,6 @@ func startExpiryEnforcer(ctx context.Context, lg *slog.Logger, deps *bot.Handler
 	}()
 }
 
-// startupSweepDelay 启动补跑前的等待时长（变量便于测试覆盖）。
-var startupSweepDelay = 30 * time.Second
-
 // runExpirySweepOnce 跑一次巡检：写日志 + 按"有动静才推"汇报管理员。
 // 与手动巡检共用 RunExpirySweep 的互斥锁，撞上时直接跳过。
 func runExpirySweepOnce(ctx context.Context, lg *slog.Logger, deps *bot.HandlerDeps, trigger string) {
@@ -378,10 +421,26 @@ func runExpirySweepOnce(ctx context.Context, lg *slog.Logger, deps *bot.HandlerD
 	bot.NotifyAdminsSweepResult(ctx, deps, res)
 }
 
+// notifySender 到期提醒的发送抽象（抽成函数类型便于测试注入假实现；
+// *tgbotapi.Bot 由 tgNotifySender 包装）。
+type notifySender func(ctx context.Context, chatID int64, text string) error
+
+// tgNotifySender 把 *tgbotapi.Bot 包装成 notifySender。
+func tgNotifySender(tg *tgbotapi.Bot) notifySender {
+	return func(ctx context.Context, chatID int64, text string) error {
+		_, err := tg.SendMessage(ctx, &tgbotapi.SendMessageParams{ChatID: chatID, Text: text})
+		return err
+	}
+}
+
 // startExpiryNotifier 每日检查即将到期的用户，私聊提醒续费。
 // notifyBeforeDays<=0 时关闭。同一进程内每天对同一用户只提醒一次。
-func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *tgbotapi.Bot, notifyBeforeDays int, hour int) {
-	if gdb == nil || bot == nil || notifyBeforeDays <= 0 {
+//
+// 启动后补跑：与 startDailyBackup 同理（定时器只在每天 hour 点触发，进程活不到
+// 那一刻就永远不提醒）。进程内的 sent 去重表重启即失效，所以必须靠落库的
+// "上次执行日期"判断今天是否已跑过 —— 否则每次重启都会把提醒重发一遍。
+func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, send notifySender, notifyBeforeDays int, hour int) {
+	if gdb == nil || send == nil || notifyBeforeDays <= 0 {
 		return
 	}
 	if hour < 0 || hour > 23 {
@@ -389,6 +448,14 @@ func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot
 	}
 	go func() {
 		sent := map[int64]string{} // userID -> date（本进程内去重）
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(startupNotifyDelay):
+		}
+		if !db.RanToday(gdb, dailyTaskExpiryNotify) {
+			runExpiryNotifyOnce(ctx, lg, gdb, send, notifyBeforeDays, sent)
+		}
 		for {
 			if ctx.Err() != nil {
 				return
@@ -398,52 +465,65 @@ func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot
 				return
 			case <-time.After(time.Until(nextLocalHour(hour))):
 			}
-			// 关键：扫描用的“当前时间”必须在唤醒后重新取。
-			// 旧实现复用了休眠前捕获的 now，导致跨日后 today 永远是旧日期，
-			// 去重表把第二天起的所有用户都当成“今日已提醒”，提醒只会发一次。
-			scan := time.Now()
-			today := scan.Format("2006-01-02")
-			// 清理跨日旧记录，避免 sent 表无限增长
-			for id, day := range sent {
-				if day != today {
-					delete(sent, id)
-				}
+			if db.RanToday(gdb, dailyTaskExpiryNotify) {
+				continue
 			}
-			// 即将到期：expire_at 在 [now, now+notifyBeforeDays] 区间，且未永久。
-			// 白名单用户在提权时已清空 expire_at（见 admin_whitelist_add），这里再显式
-			// 排除永久标记与空到期时间，双重保险，避免历史脏数据导致误提醒。
-			from := scan
-			to := scan.AddDate(0, 0, notifyBeforeDays)
-			var users []struct {
-				TelegramID  int64
-				ExpireAt    *time.Time
-				IsPermanent bool
-			}
-			_ = gdb.Model(&db.User{}).
-				Select("telegram_id", "expire_at", "is_permanent").
-				Where("is_permanent = ? AND expire_at IS NOT NULL AND expire_at >= ? AND expire_at <= ? AND status = ?", false, from, to, db.UserStatusActive).
-				Find(&users).Error
-			for _, u := range users {
-				// 二次校验：查询条件之外再挡一道（白名单/无到期时间一律不提醒）。
-				if u.ExpireAt == nil || u.IsPermanent {
-					continue
-				}
-				if prev, ok := sent[u.TelegramID]; ok && prev == today {
-					continue
-				}
-				d := int(time.Until(*u.ExpireAt).Hours() / 24)
-				if d < 0 {
-					d = 0
-				}
-				msg := fmt.Sprintf("⏰ 你的 Jellyfin 账号将在 %d 天后到期（%s）。\n用果果币续期：/shop buy 后再 /redeem。", d, u.ExpireAt.Format("2006-01-02"))
-				if _, err := bot.SendMessage(ctx, &tgbotapi.SendMessageParams{ChatID: u.TelegramID, Text: msg}); err != nil {
-					// 发送失败不记去重，明天同一用户会重试。
-					lg.Warn("到期提醒发送失败", "user", u.TelegramID, "err", err)
-					continue
-				}
-				sent[u.TelegramID] = today
-				lg.Info("已发送到期提醒", "user", u.TelegramID, "days_left", d)
-			}
+			runExpiryNotifyOnce(ctx, lg, gdb, send, notifyBeforeDays, sent)
 		}
 	}()
+}
+
+// runExpiryNotifyOnce 跑一轮到期提醒，结束后标记"今天已跑"。
+// 标记放在**跑完之后**：中途崩溃/重启会重跑一轮（可能对已提醒过的用户重发一次），
+// 但不会整天漏提醒 —— 漏提醒的代价（用户错过续费窗口）比重发一次更大。
+func runExpiryNotifyOnce(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, send notifySender, notifyBeforeDays int, sent map[int64]string) {
+	// 关键：扫描用的“当前时间”必须在唤醒后重新取。
+	// 旧实现复用了休眠前捕获的 now，导致跨日后 today 永远是旧日期，
+	// 去重表把第二天起的所有用户都当成“今日已提醒”，提醒只会发一次。
+	scan := time.Now()
+	today := scan.Format("2006-01-02")
+	// 清理跨日旧记录，避免 sent 表无限增长
+	for id, day := range sent {
+		if day != today {
+			delete(sent, id)
+		}
+	}
+	// 即将到期：expire_at 在 [now, now+notifyBeforeDays] 区间，且未永久。
+	// 白名单用户在提权时已清空 expire_at（见 admin_whitelist_add），这里再显式
+	// 排除永久标记与空到期时间，双重保险，避免历史脏数据导致误提醒。
+	from := scan
+	to := scan.AddDate(0, 0, notifyBeforeDays)
+	var users []struct {
+		TelegramID  int64
+		ExpireAt    *time.Time
+		IsPermanent bool
+	}
+	_ = gdb.Model(&db.User{}).
+		Select("telegram_id", "expire_at", "is_permanent").
+		Where("is_permanent = ? AND expire_at IS NOT NULL AND expire_at >= ? AND expire_at <= ? AND status = ?", false, from, to, db.UserStatusActive).
+		Find(&users).Error
+	for _, u := range users {
+		// 二次校验：查询条件之外再挡一道（白名单/无到期时间一律不提醒）。
+		if u.ExpireAt == nil || u.IsPermanent {
+			continue
+		}
+		if prev, ok := sent[u.TelegramID]; ok && prev == today {
+			continue
+		}
+		d := int(time.Until(*u.ExpireAt).Hours() / 24)
+		if d < 0 {
+			d = 0
+		}
+		msg := fmt.Sprintf("⏰ 你的 Jellyfin 账号将在 %d 天后到期（%s）。\n用果果币续期：/shop buy 后再 /redeem。", d, u.ExpireAt.Format("2006-01-02"))
+		if err := send(ctx, u.TelegramID, msg); err != nil {
+			// 发送失败不记去重，明天同一用户会重试。
+			lg.Warn("到期提醒发送失败", "user", u.TelegramID, "err", err)
+			continue
+		}
+		sent[u.TelegramID] = today
+		lg.Info("已发送到期提醒", "user", u.TelegramID, "days_left", d)
+	}
+	if err := db.MarkRanToday(gdb, dailyTaskExpiryNotify); err != nil {
+		lg.Warn("记录到期提醒执行日期失败", "err", err)
+	}
 }

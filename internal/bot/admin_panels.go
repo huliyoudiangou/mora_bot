@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"gorm.io/gorm"
 
@@ -17,17 +16,17 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	cfgKeyInvitePrice     = "invite_code_price"         // 邀请码积分价
-	cfgKeyRenewalPrice    = "renewal_code_price"        // 续期码积分价
-	cfgKeyRegOpen         = "registration_open"         // "1"=开注（免邀请码注册）
-	cfgKeyRegQuota        = "registration_quota"        // 开注名额（0=不限）
-	cfgKeyRegUsed         = "registration_open_used"    // 本轮开注已用名额
+	cfgKeyInvitePrice  = "invite_code_price"      // 邀请码积分价
+	cfgKeyRenewalPrice = "renewal_code_price"     // 续期码积分价
+	cfgKeyRegOpen      = "registration_open"      // "1"=开注（免邀请码注册）
+	cfgKeyRegQuota     = "registration_quota"     // 开注名额（0=不限）
+	cfgKeyRegUsed      = "registration_open_used" // 本轮开注已用名额
 	// cfgKeyRegAutoClosed 标记"当前的开注关闭是系统因名额耗尽自动造成的"（"1"=是）。
 	// 用于把自动关闭与管理员手动关闭区分开：注册失败归还名额时，只有自动关闭才应被
 	// 自动恢复，绝不能覆盖管理员的手动关闭意图。任何管理员手动开/关/改名额都会清掉它。
 	cfgKeyRegAutoClosed   = "registration_auto_closed"
-	cfgKeyExchangeEnabled = "exchange_invite_enabled"   // "1"=允许积分兑换邀请码（默认开）
-	cfgKeyExchangeQuota   = "exchange_invite_quota"     // 积分兑换邀请码配额，0=不限
+	cfgKeyExchangeEnabled = "exchange_invite_enabled" // "1"=允许积分兑换邀请码（默认开）
+	cfgKeyExchangeQuota   = "exchange_invite_quota"   // 积分兑换邀请码配额，0=不限
 )
 
 // libDescText 媒体库访问模式的中文描述。
@@ -46,14 +45,7 @@ func configGet(deps *HandlerDeps, key, def string) string {
 	if deps == nil || deps.DB == nil {
 		return def
 	}
-	var c db.SystemConfig
-	if err := deps.DB.Where("`key` = ?", key).First(&c).Error; err != nil {
-		return def
-	}
-	if strings.TrimSpace(c.Value) == "" {
-		return def
-	}
-	return c.Value
+	return db.ConfigGet(deps.DB, key, def)
 }
 
 // configSet 写 system_configs（upsert）。
@@ -61,12 +53,7 @@ func configSet(deps *HandlerDeps, key, val string) error {
 	if deps == nil || deps.DB == nil {
 		return gorm.ErrInvalidDB
 	}
-	val = strings.TrimSpace(val)
-	row := db.SystemConfig{Key: key, Value: val, UpdatedAt: time.Now()}
-	// upsert
-	return deps.DB.Where("`key` = ?", key).
-		Assign(db.SystemConfig{Value: val, UpdatedAt: time.Now()}).
-		FirstOrCreate(&row).Error
+	return db.ConfigSet(deps.DB, key, val)
 }
 
 // configGetInt 读整数配置；非法或缺失返回默认值。
