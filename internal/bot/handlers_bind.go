@@ -256,12 +256,10 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 		deps.Sessions.Clear(msg.From.ID)
 		return
 	}
-	// 新注册账号默认有效期（NEW_ACCOUNT_VALID_DAYS，0=永久）
-	if deps.NewAccountValidDays > 0 && u.ExpireAt == nil && !u.IsPermanent {
-		t := time.Now().AddDate(0, 0, deps.NewAccountValidDays)
-		if err := deps.DB.Model(u).Update("expire_at", t).Error; err != nil {
-			sendText(ctx, deps, msg.ChatID, "注册成功，但有效期设置失败，请联系管理员处理。")
-		}
+	// 重新注册即开启新订阅周期：到期时间为空（从未开通）或已过期（此前到期被停用）
+	// 都要重置，否则会带着旧过期时间上线，次日巡检立刻又被停用（白付邀请码）。
+	if err := resetExpireForNewCycle(deps, u); err != nil {
+		sendText(ctx, deps, msg.ChatID, "注册成功，但有效期设置失败，请联系管理员处理。")
 	}
 	// 媒体库基线双保险：克隆拿到的是模板克隆瞬间的权限，若管理员改过基线但尚未
 	// 「应用到全体」，克隆结果会落后；且重新注册会话可能残留旧覆盖（jelly_lib_override
@@ -285,9 +283,14 @@ func (r *Router) cmdBind(ctx context.Context, msg *Message, args []string) {
 		sendText(ctx, deps, msg.ChatID, "Jellyfin 服务未配置，无法绑定。")
 		return
 	}
-	_, err := getLocal(ctx, deps, msg.From)
+	u, err := getLocal(ctx, deps, msg.From)
 	if err != nil {
 		sendText(ctx, deps, msg.ChatID, "查询失败，请稍后再试。")
+		return
+	}
+	// 到期用户不允许绑定：/bind 免邀请码，不能成为"重新绑定即免费重置订阅"的后门。
+	if expiryBlockedForBind(u, time.Now()) {
+		sendText(ctx, deps, msg.ChatID, bindExpiredText)
 		return
 	}
 	// 允许换绑：已有绑定也直接覆盖
@@ -383,6 +386,11 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 	u, err := ensureUser(ctx, deps, msg.From)
 	if err != nil {
 		sendText(ctx, deps, msg.ChatID, "本地更新失败，稍后再试。")
+		return
+	}
+	// 写入前再挡一次（入口已挡，防向导中途订阅到期）。
+	if expiryBlockedForBind(u, time.Now()) {
+		sendText(ctx, deps, msg.ChatID, bindExpiredText)
 		return
 	}
 	if err := deps.DB.Model(u).Updates(map[string]any{

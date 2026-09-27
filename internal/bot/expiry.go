@@ -132,6 +132,43 @@ func kickSessions(ctx context.Context, deps *HandlerDeps, jfUserID string) (bool
 	return n > 0, nil
 }
 
+// shouldResetExpireForNewCycle 重新注册时是否要开启新的订阅周期：
+// 从未开通（expire_at 为空）或已过期（此前被到期停用）都要重置，否则用户会带着
+// 旧的过期时间上线，次日巡检立刻又把他停用（白付邀请码）。白名单账号无需处理。
+func shouldResetExpireForNewCycle(u *db.User, now time.Time) bool {
+	if u == nil || u.IsPermanent {
+		return false
+	}
+	return u.ExpireAt == nil || u.ExpireAt.Before(now)
+}
+
+// resetExpireForNewCycle 按 shouldResetExpireForNewCycle 的判定重置订阅周期：
+// NEW_ACCOUNT_VALID_DAYS>0 给一个新周期，=0（永久）则清空旧到期时间。
+func resetExpireForNewCycle(deps *HandlerDeps, u *db.User) error {
+	if deps == nil || deps.DB == nil || !shouldResetExpireForNewCycle(u, time.Now()) {
+		return nil
+	}
+	var newExpire *time.Time
+	if deps.NewAccountValidDays > 0 {
+		t := time.Now().AddDate(0, 0, deps.NewAccountValidDays)
+		newExpire = &t
+	}
+	return deps.DB.Model(u).Updates(map[string]any{"expire_at": newExpire}).Error
+}
+
+// bindExpiredText /bind 被订阅到期阻断时的提示（入口与写入前共用）。
+const bindExpiredText = "你的订阅已到期（Jellyfin 账号处于停用状态），请先续期：/shop buy 后再 /redeem。"
+
+// expiryBlockedForBind /bind 是否被订阅到期阻断。
+// /bind 不需要邀请码，若放行则任何到期用户都能靠重新绑定免费重置订阅；且此时
+// Jellyfin 侧账号本就处于停用状态，绑定也没有意义 —— 一律先续期。
+func expiryBlockedForBind(u *db.User, now time.Time) bool {
+	if u == nil || u.IsPermanent {
+		return false
+	}
+	return u.ExpireAt != nil && u.ExpireAt.Before(now)
+}
+
 // notifyUserText 私聊通知用户。用独立上下文发送：调用方的 ctx 可能已取消/超时，
 // 但状态已经落地，通知必须尽力送达。
 func notifyUserText(deps *HandlerDeps, tgID int64, text string) {
