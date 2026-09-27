@@ -156,16 +156,17 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 		deps.Sessions.Clear(msg.From.ID)
 		return
 	}
-	secHash, err := codes.HashSecurityCode(secCode, deps.Pepper)
-	if err != nil {
-		sendText(ctx, deps, msg.ChatID, "安全码处理失败，请重试。")
-		return
-	}
 	// Pepper 未配置时哈希以"空密钥"落库（HKDF 接受空输入），配置后永久失配：
-	// 未配置时直接拒绝完成注册，避免产生此类档案。
+	// 未配置时直接拒绝完成注册，避免产生此类档案。守卫必须在计算哈希之前，
+	// 否则会白算一次注定要被丢弃的哈希。
 	if deps.Pepper == "" {
 		deps.Sessions.Clear(msg.From.ID)
 		sendText(ctx, deps, msg.ChatID, "管理员未配置 SECURITY_PEPPER，暂无法完成注册，请联系管理员。")
+		return
+	}
+	secHash, err := codes.HashSecurityCode(secCode, deps.Pepper)
+	if err != nil {
+		sendText(ctx, deps, msg.ChatID, "安全码处理失败，请重试。")
 		return
 	}
 	uName, _ := sess.Data["username"].(string)
