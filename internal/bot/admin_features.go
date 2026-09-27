@@ -562,6 +562,9 @@ func toggleRegistrationOpen(ctx context.Context, deps *HandlerDeps, adminID int6
 	if err := configSet(deps, cfgKeyRegOpen, now); err != nil {
 		return "", err
 	}
+	// 管理员手动开关即视为人工状态：清掉"系统自动关闭"标记，
+	// 避免后续注册失败归还名额时把管理员刻意关闭的开注又自动打开。
+	_ = configSet(deps, cfgKeyRegAutoClosed, "0")
 	_ = db.WriteAudit(deps.DB, adminID, "admin_toggle_reg_open", "system_config", cfgKeyRegOpen, "开注="+now)
 	if now == "1" {
 		if q := openRegQuota(deps); q > 0 {
@@ -607,11 +610,15 @@ func (r *Router) handleAdminRegQuotaStep(ctx context.Context, msg *Message) {
 			sendText(ctx, deps, msg.ChatID, "开启开注失败："+err.Error())
 			return
 		}
+		// 新一轮 + 管理员显式开启：清掉"系统自动关闭"标记（见 cfgKeyRegAutoClosed）。
+		_ = configSet(deps, cfgKeyRegAutoClosed, "0")
 		_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_toggle_reg_open", "system_config", cfgKeyRegOpen, "开注=1（设置名额自动开启）")
 		sendText(ctx, deps, msg.ChatID,
 			fmt.Sprintf("✅ 已开启开注（免邀请码），本轮名额 %d 个。\n每注册成功 1 人扣 1 个，用完自动关闭并通知你。", n))
 		return
 	}
+	// 名额改为不限：原先"因名额耗尽自动关闭"的前提已不存在，清掉标记。
+	_ = configSet(deps, cfgKeyRegAutoClosed, "0")
 	state := "❌ 关闭"
 	if registrationOpen(deps) {
 		state = "✅ 开启"

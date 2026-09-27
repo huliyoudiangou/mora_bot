@@ -22,6 +22,10 @@ const (
 	cfgKeyRegOpen         = "registration_open"         // "1"=开注（免邀请码注册）
 	cfgKeyRegQuota        = "registration_quota"        // 开注名额（0=不限）
 	cfgKeyRegUsed         = "registration_open_used"    // 本轮开注已用名额
+	// cfgKeyRegAutoClosed 标记"当前的开注关闭是系统因名额耗尽自动造成的"（"1"=是）。
+	// 用于把自动关闭与管理员手动关闭区分开：注册失败归还名额时，只有自动关闭才应被
+	// 自动恢复，绝不能覆盖管理员的手动关闭意图。任何管理员手动开/关/改名额都会清掉它。
+	cfgKeyRegAutoClosed   = "registration_auto_closed"
 	cfgKeyExchangeEnabled = "exchange_invite_enabled"   // "1"=允许积分兑换邀请码（默认开）
 	cfgKeyExchangeQuota   = "exchange_invite_quota"     // 积分兑换邀请码配额，0=不限
 )
@@ -204,13 +208,45 @@ func consumeOpenRegSlot(ctx context.Context, deps *HandlerDeps) bool {
 }
 
 // refundOpenRegSlot 归还一个开注名额（注册中途失败回退计数；不限名额时无操作）。
-func refundOpenRegSlot(deps *HandlerDeps) {
-	if deps == nil || deps.DB == nil || openRegQuota(deps) <= 0 {
+//
+// 若这次归还让名额重新变得可用，而当前"关闭"状态又正是系统因名额耗尽自动造成的，
+// 就一并把开注恢复。否则会出现"已用 < 名额但入口关闭"的死角：剩下的名额谁也领不到，
+// 管理员还会因为先前那条"名额已用完"的自动关闭通知而被误导。
+// 管理员手动关闭过（或改过名额）时不会触发恢复，尊重人工意图。
+func refundOpenRegSlot(ctx context.Context, deps *HandlerDeps) {
+	if deps == nil || deps.DB == nil {
 		return
 	}
-	deps.DB.Model(&db.SystemConfig{}).
+	q := openRegQuota(deps)
+	if q <= 0 {
+		return
+	}
+	res := deps.DB.Model(&db.SystemConfig{}).
 		Where("`key` = ? AND CAST(value AS INTEGER) > 0", cfgKeyRegUsed).
 		Update("value", gorm.Expr("CAST(value AS INTEGER) - 1"))
+	if res.Error != nil || res.RowsAffected == 0 {
+		return
+	}
+	// 仅在"系统自动关闭 + 仍处于关闭 + 名额确有剩余"时恢复。
+	if registrationOpen(deps) || configGet(deps, cfgKeyRegAutoClosed, "0") != "1" {
+		return
+	}
+	left := q - openRegUsed(deps)
+	if left <= 0 {
+		return // 并发下名额又被占满，保持关闭
+	}
+	if err := configSet(deps, cfgKeyRegOpen, "1"); err != nil {
+		return
+	}
+	_ = configSet(deps, cfgKeyRegAutoClosed, "0")
+	_ = db.WriteAudit(deps.DB, 0, "reg_auto_reopen", "system_config", cfgKeyRegOpen,
+		fmt.Sprintf("注册失败归还名额后自动恢复开注（剩余 %d 个）", left))
+	// 管理员先收到过"名额已用完已自动关闭"，这里必须同步告知已恢复，
+	// 否则两侧状态认知不一致。用独立上下文发送，不依赖调用方 ctx 是否还活着。
+	for _, id := range deps.SuperAdminIDs {
+		_ = deps.Snd.SendText(context.Background(), id, fmt.Sprintf(
+			"♻️ 一次注册失败已归还 1 个开注名额（剩余 %d 个），开注已自动恢复开启。", left))
+	}
 }
 
 // resetOpenRegRound 开启新一轮开注：已用名额计数清零。
@@ -222,6 +258,7 @@ func resetOpenRegRound(deps *HandlerDeps) {
 }
 
 // closeOpenRegistration 关闭开注（恢复需邀请码），写审计并私聊通知管理员。
+// 所有调用点都是"名额耗尽"场景，因此同时打上自动关闭标记，供归还名额时判断可否恢复。
 func closeOpenRegistration(ctx context.Context, deps *HandlerDeps, reason string) {
 	if deps == nil || deps.DB == nil {
 		return
@@ -229,6 +266,7 @@ func closeOpenRegistration(ctx context.Context, deps *HandlerDeps, reason string
 	if err := configSet(deps, cfgKeyRegOpen, "0"); err != nil {
 		return
 	}
+	_ = configSet(deps, cfgKeyRegAutoClosed, "1")
 	_ = db.WriteAudit(deps.DB, 0, "reg_auto_close", "system_config", cfgKeyRegOpen, "开注自动关闭："+reason)
 	if deps.Snd == nil {
 		return

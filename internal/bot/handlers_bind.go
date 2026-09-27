@@ -204,7 +204,7 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 	ju, err := deps.JF.CreateUser(ctx, uName, pwd)
 	if err != nil {
 		if slotTaken {
-			refundOpenRegSlot(deps) // 创建失败，归还名额
+			refundOpenRegSlot(ctx, deps) // 创建失败，归还名额
 		}
 		if inviteClaimed {
 			releaseInviteCode(deps, inviteID, msg.From.ID)
@@ -229,7 +229,7 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 		// 远程已创建但本地档案失败：回滚远程账号，避免孤儿 Jellyfin 用户。
 		_ = deps.JF.DeleteUser(ctx, ju.ID)
 		if slotTaken {
-			refundOpenRegSlot(deps)
+			refundOpenRegSlot(ctx, deps)
 		}
 		if inviteClaimed {
 			releaseInviteCode(deps, inviteID, msg.From.ID)
@@ -248,7 +248,7 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 		// 本地档案保存失败：回滚远程账号，避免本地未关联但远程已存在。
 		_ = deps.JF.DeleteUser(ctx, ju.ID)
 		if slotTaken {
-			refundOpenRegSlot(deps)
+			refundOpenRegSlot(ctx, deps)
 		}
 		if inviteClaimed {
 			releaseInviteCode(deps, inviteID, msg.From.ID)
