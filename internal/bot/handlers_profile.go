@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,15 @@ func (r *Router) cmdProfile(ctx context.Context, msg *Message, args []string) {
 	default:
 		b += "订阅已到期，请使用 /shop 续期。\n"
 	}
-	b += fmt.Sprintf("连续签到：%d 天　账号状态：%s\n", u.SignStreak, escapeHTML(u.Status))
+	b += fmt.Sprintf("连续签到：%d 天　账号状态：%s\n", u.SignStreak, escapeHTML(userStatusText(u.Status)))
+	// 被管理员停用时把原因直接摆出来：否则用户只看到「inactive」和"什么都用不了"，
+	// 既不知道发生了什么也不知道该找谁。
+	if accountSuspended(u) {
+		reason := strings.TrimSpace(u.SuspendReason)
+		if reason == "" {
+			reason = "（管理员未记录理由）"
+		}
+		b += "⛔ 你的账号已被管理员停用：无法注册 / 绑定 / 续期。\n理由：" + escapeHTML(reason) + "\n如有疑问请直接联系管理员。\n"
+	}
 	sendHTML(ctx, deps, msg.ChatID, b)
 }

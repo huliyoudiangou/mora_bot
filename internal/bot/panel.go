@@ -19,6 +19,11 @@ func mainPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 			"👤 %s　🪙 %d 果果币\n\n"+
 			"请选择下方按钮：",
 		escapeHTML(u.DisplayName()), u.GuoGuo)
+	// 被管理员停用的账号：面板顶部直接说明，否则用户点什么都只收到一句"已被停用"，
+	// 看不出是自己账号的问题。
+	if accountSuspended(u) {
+		text = "⛔ <b>你的账号已被管理员停用</b>：注册 / 绑定 / 续期均不可用。\n如有疑问请直接联系管理员。\n\n" + text
+	}
 
 	rows := [][]KeyboardButton{
 		{

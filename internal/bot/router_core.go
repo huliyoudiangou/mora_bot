@@ -208,6 +208,8 @@ func (r *Router) cmdStart(ctx context.Context, msg *Message, _ []string) {
 }
 
 // splitCmd 拆分 "/cmd@botname arg1 arg2" → ("/cmd", [arg1, arg2])。
+// 命令名统一小写归一：Telegram 客户端会自动补全为小写，但用户手打 "/Start"、"/ADMIN"
+// 时原样透传，旧实现会回"未知命令"。参数保持原样（邀请码/续期码大小写敏感）。
 func splitCmd(text string) (string, []string) {
 	text = strings.TrimSpace(text)
 	if !strings.HasPrefix(text, "/") {
@@ -217,7 +219,7 @@ func splitCmd(text string) (string, []string) {
 	if len(fields) == 0 {
 		return "", nil
 	}
-	cmd := fields[0]
+	cmd := strings.ToLower(fields[0])
 	if at := strings.IndexByte(cmd, '@'); at > 0 {
 		cmd = cmd[:at]
 	}

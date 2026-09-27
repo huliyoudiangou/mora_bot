@@ -64,8 +64,12 @@ func SweepExpiredAccounts(ctx context.Context, deps *HandlerDeps) ExpireSweep {
 				u.TelegramID, db.UserStatusActive, false, now).
 			Update("status", db.UserStatusExpired)
 		if r.Error != nil || r.RowsAffected == 0 {
-			// 状态已被并发改动（例如刚续期成功）：把 Jellyfin 侧改回启用，避免误停用。
-			_ = setJFDisabled(ctx, deps, u.JellyfinUserID, false)
+			// 状态已被并发改动（刚续期成功 / 刚被管理员停用 / 已注销…）。这里**不能**盲目
+			// "改回启用"：若期间管理员手动停用了该账号，盲目启用等于把停用击穿。
+			// 按当前本地状态重新对齐才是唯一安全的回滚。
+			if err := reconcileJFDisabled(ctx, deps, u.TelegramID, u.JellyfinUserID); err != nil {
+				res.Failed++
+			}
 			continue
 		}
 		res.Disabled = append(res.Disabled, u.TelegramID)
@@ -94,6 +98,11 @@ func SweepExpiredAccounts(ctx context.Context, deps *HandlerDeps) ExpireSweep {
 				u.TelegramID, db.UserStatusExpired, true, now).
 			Update("status", db.UserStatusActive)
 		if r.Error != nil || r.RowsAffected == 0 {
+			// 期间状态被改动（管理员停用 / 重新注册换了账号 / 已注销）：刚写下的"启用"
+			// 必须按最新本地状态收回，否则账号在 Jellyfin 侧可用、本地却不可用。
+			if err := reconcileJFDisabled(ctx, deps, u.TelegramID, u.JellyfinUserID); err != nil {
+				res.Failed++
+			}
 			continue
 		}
 		res.Restored = append(res.Restored, u.TelegramID)
@@ -156,18 +165,66 @@ func restoreIfExpired(ctx context.Context, deps *HandlerDeps, tgID int64) {
 	if err := setJFDisabled(ctx, deps, u.JellyfinUserID, false); err != nil {
 		return
 	}
-	deps.DB.Model(&db.User{}).
+	r := deps.DB.Model(&db.User{}).
 		Where("telegram_id = ? AND status = ?", tgID, db.UserStatusExpired).
 		Update("status", db.UserStatusActive)
+	if r.Error != nil || r.RowsAffected == 0 {
+		// 期间状态被改动（例如管理员刚停用该账号）：收回刚写下的"启用"，
+		// 否则账号在 Jellyfin 侧可用、本地却是停用/已注销。
+		_ = reconcileJFDisabled(ctx, deps, tgID, u.JellyfinUserID)
+	}
 }
 
 // setJFDisabled 同步 Jellyfin 侧启用/禁用；未配置 Jellyfin 或用户未绑定 Jellyfin 时
 // 视为无需同步（本地状态照常流转）。
+//
+// 持 libApplyMu：媒体库批量应用/白名单覆盖同样走"读当前 Policy → 改几个字段 → 写回"，
+// 与这里的禁用位写回是同一份 Policy。不互斥的话，批量应用先读后写会把刚刚写下的
+// IsDisabled 覆盖回旧值 —— 被停用/到期的账号凭空恢复可登录。
 func setJFDisabled(ctx context.Context, deps *HandlerDeps, jfUserID string, disabled bool) error {
 	if deps.JF == nil || jfUserID == "" {
 		return nil
 	}
+	libApplyMu.Lock()
+	defer libApplyMu.Unlock()
 	return deps.JF.SetUserDisabled(ctx, jfUserID, disabled)
+}
+
+// reconcileJFDisabled 按"当前本地状态"重新对齐 Jellyfin 侧的启用/禁用，返回是否写成功。
+//
+// 用于条件更新落空（RowsAffected==0）后的回滚。此时本地状态已被并发改动，把 Jellyfin
+// 盲目翻到另一侧是错的：
+//   - 巡检刚禁用账号、管理员随即手动停用 → 条件更新失败后若"回滚"成启用，被停用的
+//     账号反而能登录，停用被击穿；
+//   - 巡检刚启用账号（用户已续期）、管理员随即停用 → 同样是"启用"留在远端。
+//
+// 唯一正确的做法是重新读一次本地状态，按它算出应有的禁用位再写回（幂等，不依赖先后）。
+//
+// jfID 是本次操作的账号：若本地绑定已换成别的账号（重新注册/重新绑定），说明这个旧
+// 账号不再对应用户的当前订阅，一律禁用，绝不因换绑而让旧账号"复活"。
+func reconcileJFDisabled(ctx context.Context, deps *HandlerDeps, tgID int64, jfID string) error {
+	if deps == nil || deps.DB == nil || jfID == "" {
+		return nil
+	}
+	var cur struct {
+		Status         string     `gorm:"column:status"`
+		IsPermanent    bool       `gorm:"column:is_permanent"`
+		ExpireAt       *time.Time `gorm:"column:expire_at"`
+		JellyfinUserID string     `gorm:"column:jellyfin_user_id"`
+	}
+	if err := deps.DB.Model(&db.User{}).
+		Select("status", "is_permanent", "expire_at", "jellyfin_user_id").
+		Where("telegram_id = ?", tgID).Scan(&cur).Error; err != nil {
+		return err
+	}
+	if cur.JellyfinUserID != jfID {
+		return setJFDisabled(ctx, deps, jfID, true)
+	}
+	// 只有"活跃且订阅仍有效（白名单或未到期）"才应处于启用状态，其余
+	// （expired / inactive / deleted）一律禁用。
+	enable := cur.Status == db.UserStatusActive &&
+		(cur.IsPermanent || (cur.ExpireAt != nil && cur.ExpireAt.After(time.Now())))
+	return setJFDisabled(ctx, deps, jfID, !enable)
 }
 
 // kickSessions 踢掉该用户在 Jellyfin 的全部在线会话（返回是否确实清理了会话）。

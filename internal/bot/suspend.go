@@ -31,6 +31,7 @@ var (
 	errSuspendDeleted       = errors.New("该账号已注销")
 	errSuspendJFSync        = errors.New("Jellyfin 侧同步失败")
 	errSuspendStateChanged  = errors.New("账号状态刚被其它操作改动")
+	errSuspendIsAdmin       = errors.New("目标是 bot 管理员")
 )
 
 // suspendReasonMax 停用理由长度上限（与 SuspendReason 列宽对齐并留余量）。
@@ -55,6 +56,8 @@ func suspendErrText(err error) string {
 		return "ℹ️ 该账号当前不是停用状态，无需解封。"
 	case errors.Is(err, errSuspendDeleted):
 		return "❌ 该账号已注销，没有可停用的账号。"
+	case errors.Is(err, errSuspendIsAdmin):
+		return "❌ 该用户是 bot 管理员，不能停用。如需处理请先从环境变量里移除其管理员身份。"
 	case errors.Is(err, errSuspendJFSync):
 		return "❌ 同步 Jellyfin 失败，本地状态未改动（账号仍可用）。请确认 Jellyfin 服务正常后重试。"
 	case errors.Is(err, errSuspendStateChanged):
@@ -99,6 +102,11 @@ func SuspendUserAccount(ctx context.Context, deps *HandlerDeps, tgID int64, reas
 	if deps == nil || deps.DB == nil {
 		return "", db.ErrNilDB
 	}
+	// 不能停用 bot 管理员：管理员身份来自 env，停用后他仍能进 /admin，但自己的 Jellyfin
+	// 账号会被一并禁用（自锁），而面板上极易误点自己。确需处理请先改 env。
+	if deps.IsSuper != nil && deps.IsSuper(tgID) {
+		return "", errSuspendIsAdmin
+	}
 	var u db.User
 	if err := deps.DB.Where("telegram_id = ?", tgID).First(&u).Error; err != nil {
 		return "", errSuspendTargetMissing
@@ -134,7 +142,9 @@ func SuspendUserAccount(ctx context.Context, deps *HandlerDeps, tgID int64, reas
 			// 并发下另一位管理员已经停用成功：保留停用结果，绝不回滚 Jellyfin。
 			return "", errSuspendAlready
 		}
-		_ = setJFDisabled(ctx, deps, u.JellyfinUserID, false)
+		// 本地没写成功：按最新本地状态对齐 Jellyfin（不能盲目"改回启用"，
+		// 否则期间被停用/已注销的账号会被这次回滚启用）。
+		_ = reconcileJFDisabled(ctx, deps, tgID, u.JellyfinUserID)
 		return "", errSuspendStateChanged
 	}
 
@@ -189,10 +199,9 @@ func UnsuspendUserAccount(ctx context.Context, deps *HandlerDeps, tgID int64, ad
 			"suspend_reason": "",
 		})
 	if res.Error != nil || res.RowsAffected == 0 {
-		// 并发下状态已被改动：本地没有写入，把刚才的 Jellyfin 启用改回去。
-		if !backToExpired {
-			_ = setJFDisabled(ctx, deps, u.JellyfinUserID, true)
-		}
+		// 本地没写成功，刚写下的"启用"必须按最新本地状态收回（对方可能已被另一位
+		// 管理员重新停用、或账号已注销）；用对齐而非盲目禁用，避免误停用刚续期的用户。
+		_ = reconcileJFDisabled(ctx, deps, tgID, u.JellyfinUserID)
 		return "", errSuspendStateChanged
 	}
 
@@ -265,9 +274,12 @@ func adminUserCard(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 	case db.UserStatusDeleted:
 		// 已注销账号没有可停用的对象（Jellyfin 绑定已清空）。
 	default:
-		rows = append(rows, []KeyboardButton{
-			{Text: "🚫 停用账号", Data: BuildCallbackData(DKAdmin, "user", "suspend", itoa64s(u.TelegramID))},
-		})
+		// bot 管理员不提供停用按钮（自锁风险，见 SuspendUserAccount）。
+		if !isAdmin {
+			rows = append(rows, []KeyboardButton{
+				{Text: "🚫 停用账号", Data: BuildCallbackData(DKAdmin, "user", "suspend", itoa64s(u.TelegramID))},
+			})
+		}
 	}
 	rows = append(rows, []KeyboardButton{
 		{Text: "↩️ 返回管理面板", Data: BuildCallbackData(DKAdmin, "view")},
@@ -417,6 +429,11 @@ func handleAdminUserAction(ctx context.Context, deps *HandlerDeps, cq *CallbackQ
 		}
 		if u.Status == db.UserStatusDeleted {
 			sendText(ctx, deps, cq.ChatID, "❌ 该账号已注销，没有可停用的账号。")
+			return
+		}
+		// 管理员账号不进入理由向导（最终也会被 SuspendUserAccount 拦下）。
+		if deps.IsSuper != nil && deps.IsSuper(tgID) {
+			sendText(ctx, deps, cq.ChatID, suspendErrText(errSuspendIsAdmin))
 			return
 		}
 		deps.Sessions.Begin(cq.From.ID, sessAdminSuspend)

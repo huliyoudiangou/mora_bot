@@ -474,8 +474,18 @@ func (r *Router) doAccountDelete(ctx context.Context, msg *Message) {
 	}
 	// 本地档案同步注销：解绑 + 清空订阅状态（过期时间/永久标记/绑定类型），
 	// 避免 Jellyfin 已删除但本地还显示“有效订阅”。
+	//
+	// 例外：被管理员手动停用的账号**保持 inactive**，不写 deleted。状态是"是否被停用"
+	// 的唯一真相，而 `/register`/`/bind` 只拦 inactive —— 若注销后变成 deleted，用户
+	// 就能靠"自助注销 → 重新注册"把停用整个绕过（绑定已清空、可注册）。
+	// 停用理由保留，管理员侧仍能看到原因。
+	suspended := accountSuspended(u)
+	newStatus := db.UserStatusDeleted
+	if suspended {
+		newStatus = db.UserStatusInactive
+	}
 	if err := deps.DB.Model(u).Updates(map[string]any{
-		"status":            db.UserStatusDeleted,
+		"status":            newStatus,
 		"jellyfin_user_id":  "",
 		"jellyfin_username": "",
 		"expire_at":         nil,
@@ -483,6 +493,11 @@ func (r *Router) doAccountDelete(ctx context.Context, msg *Message) {
 		"bind_type":         "",
 	}).Error; err != nil {
 		sendText(ctx, deps, msg.ChatID, "删除本地账号失败，请联系管理员。")
+		return
+	}
+	if suspended {
+		sendText(ctx, deps, msg.ChatID,
+			"✅ Jellyfin 账号已删除。\n\n⚠️ 你的账号仍处于「管理员停用」状态，暂时无法重新注册或绑定；如有疑问请直接联系管理员。")
 		return
 	}
 	sendText(ctx, deps, msg.ChatID, "✅ 账号已注销，感谢使用。")
