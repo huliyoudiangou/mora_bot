@@ -85,9 +85,9 @@ func Load() (*Config, error) {
 		DatabaseURL:            env("DATABASE_PATH", env("DATABASE_URL", "data/mora_bot.db")),
 		SuperAdminTgIDs:        parseIDList(env("SUPER_ADMIN_TG_IDS", env("ADMIN_TELEGRAM_IDS", ""))),
 		SecurityPepper:         env("SECURITY_PEPPER", ""),
-		DbMaxOpenConns:         envInt(orEnv("DB_MAX_OPEN_CONNS", "DATABASE_MAX_OPEN_CONNS"), 16),
-		DbMaxIdleConns:         envInt(orEnv("DB_MAX_IDLE_CONNS", "DATABASE_MAX_IDLE_CONNS"), 8),
-		DbBusyTimeoutMs:        envInt(orEnv("DB_BUSY_TIMEOUT_MS", "DATABASE_BUSY_TIMEOUT_MS"), 5000),
+		DbMaxOpenConns:         envIntAny([]string{"DB_MAX_OPEN_CONNS", "DATABASE_MAX_OPEN_CONNS"}, 16),
+		DbMaxIdleConns:         envIntAny([]string{"DB_MAX_IDLE_CONNS", "DATABASE_MAX_IDLE_CONNS"}, 8),
+		DbBusyTimeoutMs:        envIntAny([]string{"DB_BUSY_TIMEOUT_MS", "DATABASE_BUSY_TIMEOUT_MS"}, 5000),
 		JellyfinURL:            env("JELLYFIN_URL", ""),
 		JellyfinAPIKey:         env("JELLYFIN_API_KEY", ""),
 		JellyfinTemplateUserID: env("JELLYFIN_TEMPLATE_USER_ID", ""),
@@ -145,22 +145,27 @@ func envInt64(k string, def int64) int64 {
 	return def
 }
 
+// envIntAny 按顺序尝试多个键名（兼容新旧命名），返回第一个解析成功且为正数的值，
+// 全部缺失/非法时回退 def。用于 DB_MAX_* 这类存在 DATABASE_* 旧键名的配置项。
+//
+// 注意：必须传"键名"而不是"值"。旧实现写作 envInt(orEnv("新键","旧键"), def) ——
+// orEnv 返回的是值，被 envInt 当成键名去 os.Getenv，恒为空，导致这几个配置
+// **永远取默认值**（.env 里怎么配都不生效）。
+func envIntAny(keys []string, def int) int {
+	for _, k := range keys {
+		if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(k))); err == nil && v > 0 {
+			return v
+		}
+	}
+	return def
+}
+
 // env 读取字符串环境变量（空值回退默认）。
 func env(k, def string) string {
 	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 		return v
 	}
 	return def
-}
-
-// orEnv 返回第一个非空的环境变量值（兼容新旧键名）。
-func orEnv(keys ...string) string {
-	for _, k := range keys {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func envBool(k string, def bool) bool {
