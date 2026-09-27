@@ -19,6 +19,9 @@ var errPepperMissing = errors.New("SECURITY_PEPPER 未配置，卡密功能不�
 // errRedeemInternal 核销事务内部错误（不向用户透出细节）。
 var errRedeemInternal = errors.New("redeem internal error")
 
+// errRedeemPermanent 白名单/永久账号无需核销续期码（卡密不会被消耗）。
+var errRedeemPermanent = errors.New("permanent account does not need renewal")
+
 // codesPerMessage 每条消息最多展示的卡密数：
 // 每行 = 25 字符卡密 + 13 字符 <code> 标签 + 换行 ≈ 39，100 行加标题约 3960 < 4096 上限。
 const codesPerMessage = 100
@@ -76,7 +79,8 @@ func generateInviteSecret(pepper string, owner int64, remark string) (*codes.Cod
 }
 
 // redeemRenewalCode 用户核销续期码：把天数叠加到本地用户到期时间。
-// 成功返回新增天数与新的到期时间。
+// 成功返回新增天数与新的到期时间（newExpire 必然非 nil）。
+// 白名单/永久账号返回 errRedeemPermanent，且不会消耗卡密。
 func redeemRenewalCode(deps *HandlerDeps, user *db.User, plainCode string) (int, *time.Time, error) {
 	if deps == nil || deps.DB == nil || user == nil {
 		return 0, nil, errors.New("参数错误")
@@ -109,6 +113,17 @@ func redeemRenewalCode(deps *HandlerDeps, user *db.User, plainCode string) (int,
 	}
 
 	err = deps.DB.Transaction(func(tx *gorm.DB) error {
+		// 白名单/永久账号不需要续期：必须在消费卡密之前拦下。旧实现在消费之后才发现
+		// 是白名单账号（"不再叠加，但消耗卡密"），用户白白损失一张码。
+		var perm struct{ IsPermanent bool }
+		if err := tx.Model(&db.User{}).Select("is_permanent").
+			Where("telegram_id = ?", user.TelegramID).Scan(&perm).Error; err != nil {
+			return fmt.Errorf("%w: %v", errRedeemInternal, err)
+		}
+		if perm.IsPermanent {
+			return errRedeemPermanent
+		}
+
 		// 幂等：仅当仍为 unused 才消费
 		res := tx.Model(&db.RenewalCode{}).
 			Where("id = ? AND status = ?", rec.ID, db.CodeStatusUnused).
@@ -127,28 +142,21 @@ func redeemRenewalCode(deps *HandlerDeps, user *db.User, plainCode string) (int,
 		// 在事务内重新读取当前到期时间，避免并发核销两张码时都基于旧值计算
 		// 导致后一笔覆盖前一笔、白白损失续期天数。
 		var cur db.User
-		if err := tx.Select("telegram_id", "expire_at", "is_permanent").
+		if err := tx.Select("telegram_id", "expire_at").
 			Where("telegram_id = ?", user.TelegramID).First(&cur).Error; err != nil {
 			return fmt.Errorf("%w: %v", errRedeemInternal, err)
 		}
 		now := time.Now()
-		if cur.IsPermanent {
-			// 白名单账号不再叠加，但消耗卡密。
-		} else if cur.ExpireAt == nil || cur.ExpireAt.Before(now) {
+		if cur.ExpireAt == nil || cur.ExpireAt.Before(now) {
 			t := now.AddDate(0, 0, days)
 			newExpire = &t
 		} else {
 			t := cur.ExpireAt.AddDate(0, 0, days)
 			newExpire = &t
 		}
-		if newExpire != nil {
-			updates := map[string]any{"expire_at": *newExpire}
-			if cur.IsPermanent {
-				updates["is_permanent"] = false
-			}
-			if err := tx.Model(&db.User{}).Where("telegram_id = ?", user.TelegramID).Updates(updates).Error; err != nil {
-				return fmt.Errorf("%w: %v", errRedeemInternal, err)
-			}
+		if err := tx.Model(&db.User{}).Where("telegram_id = ?", user.TelegramID).
+			Update("expire_at", *newExpire).Error; err != nil {
+			return fmt.Errorf("%w: %v", errRedeemInternal, err)
 		}
 		// 续期审计
 		return tx.Create(&db.RenewalRecord{

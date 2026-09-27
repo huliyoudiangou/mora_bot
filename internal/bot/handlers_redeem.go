@@ -33,10 +33,6 @@ func (r *Router) cmdRedeem(ctx context.Context, msg *Message, args []string) {
 		sendText(ctx, deps, msg.ChatID, redeemErrText(err))
 		return
 	}
-	if newExpire == nil {
-		sendText(ctx, deps, msg.ChatID, "✅ 续期码已核销（白名单/永久账号无需叠加天数）。")
-		return
-	}
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
 		"✅ 续期成功！\n新增 %d 天，当前有效期至 <b>%s</b>",
 		days, newExpire.Format("2006-01-02")))
@@ -78,10 +74,6 @@ func (r *Router) handleRedeemStep(ctx context.Context, msg *Message) {
 		return
 	}
 	deps.Sessions.Clear(msg.From.ID)
-	if newExpire == nil {
-		sendText(ctx, deps, msg.ChatID, "✅ 续期码已核销（白名单/永久账号无需叠加天数）。")
-		return
-	}
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
 		"✅ 续期成功！\n新增 %d 天，当前有效期至 <b>%s</b>",
 		days, newExpire.Format("2006-01-02")))
@@ -94,6 +86,8 @@ func redeemErrText(err error) string {
 		return "❌ 卡密不存在或已被使用。"
 	case errors.Is(err, codes.ErrCodeUsed):
 		return "❌ 该续期码已被使用。"
+	case errors.Is(err, errRedeemPermanent):
+		return "ℹ️ 你是白名单/永久账号，永久有效，无需核销续期码（卡密未消耗，可留作后用或转给他人）。"
 	case errors.Is(err, errRedeemInternal):
 		return "❌ 核销失败，请稍后再试；多次失败请联系管理员。"
 	default:

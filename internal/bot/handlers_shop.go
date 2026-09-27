@@ -59,6 +59,11 @@ func (r *Router) cmdShopBuy(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "续期码暂未开放兑换。")
 		return
 	}
+	if u.IsPermanent {
+		// 白名单/永久账号不会过期，续期码对它无效（核销也不叠加天数），必须拦在扣费之前。
+		sendText(ctx, deps, msg.ChatID, "你是白名单/永久账号，永久有效，无需购买续期码。")
+		return
+	}
 	if u.GuoGuo < price {
 		sendText(ctx, deps, msg.ChatID, "果果币不足，先去 /signin 签到攒一波。")
 		return

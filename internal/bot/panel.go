@@ -66,6 +66,10 @@ func shopPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 	if price <= 0 {
 		renewLine = "• 续期码：暂未开放"
 	}
+	if u.IsPermanent {
+		// 白名单/永久账号本就不会过期，续期码对它无意义，直接说明并收起购买入口。
+		renewLine = "• 续期码：你是白名单/永久账号，永久有效，无需购买"
+	}
 	text := fmt.Sprintf(
 		"🛒 <b>果果币商店</b>\n\n"+
 			"当前余额：🪙 %d\n\n"+
@@ -73,17 +77,20 @@ func shopPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 			"%s\n\n"+
 			"购买后获得卡密码，用于续期或邀请新用户。",
 		u.GuoGuo, renewLine, invLine)
-	rows := [][]KeyboardButton{
-		{
+	rows := [][]KeyboardButton{}
+	if !u.IsPermanent {
+		rows = append(rows, []KeyboardButton{
 			{Text: "💳 购买续期码", Data: BuildCallbackData(DKShop, "buy")},
-		},
-		{
+		})
+	}
+	rows = append(rows,
+		[]KeyboardButton{
 			{Text: "🎫 购买邀请码", Data: BuildCallbackData(DKShop, "invite")},
 		},
-		{
+		[]KeyboardButton{
 			{Text: "↩️ 返回主菜单", Data: BuildCallbackData(DKMenu, "home")},
 		},
-	}
+	)
 	return text, rows
 }
 
