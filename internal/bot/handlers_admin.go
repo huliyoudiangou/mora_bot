@@ -264,7 +264,7 @@ func (r *Router) handleAdminAddPoints(ctx context.Context, msg *Message, args []
 		return
 	}
 	if err := db.AddPoints(deps.DB, u.TelegramID, int(delta), "admin_adjust", "AdminCmd", msg.From.ID); err != nil {
-		sendText(ctx, deps, msg.ChatID, "调整失败："+err.Error())
+		sendText(ctx, deps, msg.ChatID, adminPointsErrText(err))
 		return
 	}
 	_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_addpoints", "user", itoa64s(tgID), fmt.Sprintf("调整果果币 %d（delta=%d）", delta, delta))

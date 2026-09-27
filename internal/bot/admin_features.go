@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -11,6 +12,22 @@ import (
 	"mora_bot/internal/codes"
 	"mora_bot/internal/db"
 )
+
+// adminPointsErrText 管理员调账失败的可见文案：业务错误给具体原因，其余一律脱敏。
+// 旧实现直接拼 err.Error()，会把内部哨兵串（如 ErrOptimisticLock 的
+// "concurrent update, please retry"）乃至 DB 错误文本透给管理员。
+func adminPointsErrText(err error) string {
+	switch {
+	case errors.Is(err, db.ErrInsufficientPoints):
+		return "该用户果果币不足，不能扣成负数。"
+	case errors.Is(err, db.ErrOptimisticLock):
+		return "该用户余额刚被其它操作改动，请重试一次。"
+	case errors.Is(err, db.ErrNilDB):
+		return "数据库未就绪，请稍后再试。"
+	default:
+		return "调整失败，请稍后再试。"
+	}
+}
 
 // ---------------------------------------------------------------------------
 // 1) 调整用户积分（两步：tg_id → delta）
@@ -58,7 +75,7 @@ func (r *Router) handleAdminAdjPointsStep(ctx context.Context, msg *Message) {
 		return
 	}
 	if err := db.AddPoints(deps.DB, u.TelegramID, int(delta), "admin_adjust", "AdminPanel", msg.From.ID); err != nil {
-		sendText(ctx, deps, msg.ChatID, "调整失败："+err.Error())
+		sendText(ctx, deps, msg.ChatID, adminPointsErrText(err))
 		return
 	}
 	_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_addpoints", "user", itoa64s(tgID), fmt.Sprintf("调整果果币 %d", delta))
