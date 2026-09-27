@@ -129,6 +129,8 @@ func main() {
 	startDailyBackup(ctx, lg, gdb, tg, cfg.BackupDailyHour, cfg.DatabaseURL, cfg.BackupEncryptKey, cfg.BackupKeepCount, cfg.BackupGroupID)
 	// 3) 每日到期提醒
 	startExpiryNotifier(ctx, lg, gdb, tg, cfg.NotifyBeforeDays, 10)
+	// 4) 每日到期停用/恢复巡检（EXPIRE_AUTO_DISABLE=false 关闭）
+	startExpiryEnforcer(ctx, lg, deps, cfg.ExpireAutoDisable, 10)
 
 	// 会话/锁 GC
 	go func() {

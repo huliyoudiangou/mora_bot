@@ -9,6 +9,7 @@ mora_bot 是一个用 Go 编写的 **Jellyfin 用户管理 Telegram Bot**：让�
 | 账号 | 邀请码注册（克隆模板用户 Jellyfin 权限策略）；管理面板可「开注」免邀请码注册，并可限定开注名额（用完自动关闭） | ✅   |
 | 账号 | 绑定 / 续期 / 改密（旧密码验证） / 忘记密码重置（安全码校验，每用户最多 2 次） | ✅   |
 | 账号 | 自助解绑、自助注销（彻底删除 Jellyfin 账号）                                    | ✅   |
+| 账号 | 订阅到期：到期前私聊提醒；到期自动停用 Jellyfin 账号（`EXPIRE_AUTO_DISABLE`），续期或加入白名单后自动恢复 | ✅   |
 | 卡密 | 管理员批量生成邀请码 / 续期码（HMAC + XChaCha20-Poly1305 加密存储，明文不落库） | ✅   |
 | 卡密 | 面板交互式发卡：邀请码选数量；续期码先选天数再选数量 | ✅   |
 | 卡密 | 果果币兑换续期码 / 邀请码（/shop buy，价格运行时可在管理面板调整；白名单/永久账号不显示购买续期码入口）                                               | ✅   |
@@ -66,6 +67,7 @@ docker compose restart
 | 启动通知 | 进程启动后私聊所有管理员 | `BOT_STARTUP_NOTIFY_ADMINS=true` |
 | 每日自动备份 | 每日在指定小时备份 SQLite（可选加密、可选推送到群），保留 N 份 | `BACKUP_DAILY_HOUR=3` / `BACKUP_KEEP_COUNT=14` / `BACKUP_ENCRYPT_KEY` / `BACKUP_GROUP_ID` |
 | 到期提醒 | 每天扫描即将到期的用户并私聊提醒续费（白名单用户与无到期时间的用户不提醒） | `NOTIFY_BEFORE_DAYS=3`（0=关闭） |
+| 到期停用 | 每天巡检：已到期账号自动停用（Jellyfin 禁用 + 私聊通知），续期或加入白名单后自动恢复 | `EXPIRE_AUTO_DISABLE=true`（false=只提醒不停用） |
 
 ## 完整环境变量（见 .env.example）
 

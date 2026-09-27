@@ -44,6 +44,9 @@ type Config struct {
 	NewAccountValidDays int
 	// 到期前提醒天数（NOTIFY_BEFORE_DAYS）
 	NotifyBeforeDays int
+	// 到期自动停用 Jellyfin 账号（EXPIRE_AUTO_DISABLE，默认开启）：
+	// 到期后自动禁用账号并通知用户，续期或加入白名单后自动恢复。
+	ExpireAutoDisable bool
 
 	// ---------- 追剧 ----------
 	// 每用户每天最多求剧数（DRAMA_REQUEST_DAILY_LIMIT；0=不限）
@@ -96,6 +99,7 @@ func Load() (*Config, error) {
 		PriceInviteCode:        envIntNonNeg("PRICE_INVITE_CODE", 300),
 		NewAccountValidDays:    envIntNonNeg("NEW_ACCOUNT_VALID_DAYS", 0),
 		NotifyBeforeDays:       envIntNonNeg("NOTIFY_BEFORE_DAYS", 3),
+		ExpireAutoDisable:      envBool("EXPIRE_AUTO_DISABLE", true),
 		DramaDailyLimit:        envIntNonNeg("DRAMA_REQUEST_DAILY_LIMIT", 5),
 		NoticeGroupID:          envInt64("NOTICE_GROUP_ID", 0),
 		StartupNotifyAdmins:    envBool("BOT_STARTUP_NOTIFY_ADMINS", false),

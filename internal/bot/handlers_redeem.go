@@ -33,6 +33,8 @@ func (r *Router) cmdRedeem(ctx context.Context, msg *Message, args []string) {
 		sendText(ctx, deps, msg.ChatID, redeemErrText(err))
 		return
 	}
+	// 若此前被到期停用，续期后立即恢复（不必等次日巡检）。
+	restoreIfExpired(ctx, deps, u.TelegramID)
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
 		"✅ 续期成功！\n新增 %d 天，当前有效期至 <b>%s</b>",
 		days, newExpire.Format("2006-01-02")))
@@ -74,6 +76,8 @@ func (r *Router) handleRedeemStep(ctx context.Context, msg *Message) {
 		return
 	}
 	deps.Sessions.Clear(msg.From.ID)
+	// 若此前被到期停用，续期后立即恢复（不必等次日巡检）。
+	restoreIfExpired(ctx, deps, u.TelegramID)
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
 		"✅ 续期成功！\n新增 %d 天，当前有效期至 <b>%s</b>",
 		days, newExpire.Format("2006-01-02")))

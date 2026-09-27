@@ -292,18 +292,27 @@ func (r *Router) handleAdminWLStep(ctx context.Context, msg *Message) {
 		}
 		sendText(ctx, deps, msg.ChatID, resp)
 	default: // add
-		err := deps.DB.Model(&u).Updates(map[string]any{
+		wasExpired := u.Status == db.UserStatusExpired
+		updates := map[string]any{
 			"is_permanent": true,
-			"status":       db.UserStatusActive,
 			// 提权即永久：同时清空原到期时间。残留的 expire_at 会带来三类问题——
 			// ① 管理员查询卡片出现"白名单：是"却仍显示到期日的矛盾信息，容易混淆；
 			// ② 一旦移除白名单，旧到期时间会"复活"，用户会再次收到到期提醒；
 			// ③ 任何按 ExpireAt 判断的路径都可能对白名单用户误判。
 			"expire_at": nil,
-		}).Error
+		}
+		// 被到期停用的账号交给 restoreIfExpired 恢复（先启用 Jellyfin 再改状态），
+		// 这里不能先把 status 写成 active，否则 Jellyfin 侧启用失败会留下不一致。
+		if !wasExpired {
+			updates["status"] = db.UserStatusActive
+		}
+		err := deps.DB.Model(&u).Updates(updates).Error
 		if err != nil {
 			sendText(ctx, deps, msg.ChatID, "添加白名单失败："+err.Error())
 			return
+		}
+		if wasExpired {
+			restoreIfExpired(ctx, deps, tgID)
 		}
 		_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_whitelist_add", "user", itoa64s(tgID), "添加白名单")
 		sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 已添加白名单：tg=%d（永久有效，不受规则约束，无需保号；原到期时间已清除，不会再收到到期提醒）", tgID))

@@ -320,6 +320,37 @@ func encryptBytes(data []byte, key string) ([]byte, error) {
 
 // ------------------------ 到期提醒 ------------------------
 
+// startExpiryEnforcer 每日巡检订阅到期：停用已到期账号、恢复已续期/白名单账号。
+// enabled=false 时关闭。与到期提醒同一小时触发：提醒面向"即将到期"，巡检处理"已到期"，
+// 两者用户集合互斥，同小时并发互不影响。
+func startExpiryEnforcer(ctx context.Context, lg *slog.Logger, deps *bot.HandlerDeps, enabled bool, hour int) {
+	if !enabled || deps == nil || deps.DB == nil {
+		return
+	}
+	if hour < 0 || hour > 23 {
+		hour = 10
+	}
+	go func() {
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Until(nextLocalHour(hour))):
+			}
+			res := bot.SweepExpiredAccounts(ctx, deps)
+			if len(res.Disabled) > 0 || len(res.Restored) > 0 || res.Failed > 0 {
+				lg.Info("到期巡检完成",
+					"disabled", len(res.Disabled),
+					"restored", len(res.Restored),
+					"failed", res.Failed)
+			}
+		}
+	}()
+}
+
 // startExpiryNotifier 每日检查即将到期的用户，私聊提醒续费。
 // notifyBeforeDays<=0 时关闭。同一进程内每天对同一用户只提醒一次。
 func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot *tgbotapi.Bot, notifyBeforeDays int, hour int) {
