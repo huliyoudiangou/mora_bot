@@ -206,6 +206,9 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 	case "whitelist":
 		// 主面板入口：admin:whitelist → 打开白名单子面板
 		sendAdminSub(ctx, deps, cq, "whitelist")
+	case "expiry":
+		// 主面板入口：admin:expiry → 直接列出到期名单（已停用 + 未停用）
+		handleAdminExpiryList(ctx, deps, cq)
 	case "wl":
 		// 实际回调 admin:wl:add / admin:wl:del / admin:wl:list
 		// ParseCallbackData 拆成 action="wl", args=["add"|"del"|"list"]（无 args 时是进入白名单子面板）
@@ -389,13 +392,83 @@ func handleAdminWLList(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery
 		if i >= maxShow {
 			break
 		}
-		line := fmt.Sprintf("• %s（tg=%d）", escapeHTML(u.DisplayName()), u.TelegramID)
+		line := fmt.Sprintf("• %s（tg=%d）", escapeHTML(truncateRunes(u.DisplayName(), 20)), u.TelegramID)
 		if u.JellyfinUsername != "" {
-			line += " · JF:" + escapeHTML(u.JellyfinUsername)
+			line += " · JF:" + escapeHTML(truncateRunes(u.JellyfinUsername, 24))
 		}
 		b.WriteString(line + "\n")
 	}
 	sendHTML(ctx, deps, cq.ChatID, b.String())
+}
+
+// handleAdminExpiryList 列出到期名单：已到期停用 + 未停用（按到期日升序，即最快到期在前）。
+// 管理员据此催续费或核对停用是否准确。
+func handleAdminExpiryList(ctx context.Context, deps *HandlerDeps, cq *CallbackQuery) {
+	if deps.IsSuper == nil || !deps.IsSuper(cq.From.ID) {
+		return
+	}
+	// 每节截断展示，避免名单很长时消息超过 Telegram 4096 上限被整条拒发。
+	const maxShow = 15
+	now := time.Now()
+
+	var stopped []db.User
+	var stoppedTotal int64
+	deps.DB.Model(&db.User{}).Where("status = ?", db.UserStatusExpired).Count(&stoppedTotal)
+	if err := deps.DB.Where("status = ?", db.UserStatusExpired).
+		Order("expire_at asc").Limit(maxShow).Find(&stopped).Error; err != nil {
+		sendText(ctx, deps, cq.ChatID, "查询失败："+err.Error())
+		return
+	}
+
+	const dueCond = "status = ? AND is_permanent = ? AND expire_at IS NOT NULL"
+	var due []db.User
+	var dueTotal int64
+	deps.DB.Model(&db.User{}).Where(dueCond, db.UserStatusActive, false).Count(&dueTotal)
+	if err := deps.DB.Where(dueCond, db.UserStatusActive, false).
+		Order("expire_at asc").Limit(maxShow).Find(&due).Error; err != nil {
+		sendText(ctx, deps, cq.ChatID, "查询失败："+err.Error())
+		return
+	}
+
+	var b strings.Builder
+	b.WriteString("⏰ <b>到期名单</b>")
+	writeExpirySection(&b, "已到期停用", stoppedTotal, stopped, now, maxShow)
+	writeExpirySection(&b, "未停用（按到期日升序）", dueTotal, due, now, maxShow)
+	sendHTML(ctx, deps, cq.ChatID, b.String())
+}
+
+// writeExpirySection 写一节到期名单（含总人数与截断提示）。
+func writeExpirySection(b *strings.Builder, title string, total int64, users []db.User, now time.Time, maxShow int) {
+	if total == 0 {
+		b.WriteString("\n<b>" + title + "</b>：暂无\n")
+		return
+	}
+	fmt.Fprintf(b, "\n<b>%s</b>（共 %d 人）\n", title, total)
+	for _, u := range users {
+		b.WriteString("· " + expiryLine(u, now) + "\n")
+	}
+	if total > int64(maxShow) {
+		fmt.Fprintf(b, "…仅显示前 %d 人\n", maxShow)
+	}
+}
+
+// expiryLine 一行到期信息：名称（tg）· JF:用户名 · 到期日（剩 N 天 / 已过期 N 天）。
+// 名称与 Jellyfin 用户名按 rune 截断，保证整条消息不超 Telegram 长度上限。
+func expiryLine(u db.User, now time.Time) string {
+	line := fmt.Sprintf("%s（tg=%d）", escapeHTML(truncateRunes(u.DisplayName(), 20)), u.TelegramID)
+	if u.JellyfinUsername != "" {
+		line += " · JF:" + escapeHTML(truncateRunes(u.JellyfinUsername, 24))
+	}
+	if u.ExpireAt == nil {
+		return line + " · 无到期时间"
+	}
+	line += " · 到期 " + u.ExpireAt.Format("2006-01-02")
+	if d := int(time.Until(*u.ExpireAt).Hours() / 24); d < 0 {
+		line += fmt.Sprintf("（已过期 %d 天）", -d)
+	} else {
+		line += fmt.Sprintf("（剩 %d 天）", d)
+	}
+	return line
 }
 
 // handleDramaCallback 追剧面板动作。

@@ -144,6 +144,7 @@ func adminPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 	rows := [][]KeyboardButton{
 		{
 			{Text: "📊 全局统计", Data: BuildCallbackData(DKAdmin, "stats")},
+			{Text: "⏰ 到期名单", Data: BuildCallbackData(DKAdmin, "expiry")},
 		},
 		{
 			{Text: "🎟 生成邀请码", Data: BuildCallbackData(DKAdmin, "gencode")},
