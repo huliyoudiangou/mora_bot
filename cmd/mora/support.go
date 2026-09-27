@@ -323,6 +323,10 @@ func encryptBytes(data []byte, key string) ([]byte, error) {
 // startExpiryEnforcer 每日巡检订阅到期：停用已到期账号、恢复已续期/白名单账号。
 // enabled=false 时关闭。与到期提醒同一小时触发：提醒面向"即将到期"，巡检处理"已到期"，
 // 两者用户集合互斥，同小时并发互不影响。
+//
+// 启动后先补跑一次：定时器只在每天 hour 点触发，若进程在 hour 之后启动（或频繁重启），
+// 旧实现要一直等到"明天 hour 点"，巡检可能**永远不执行** —— 已到期的账号迟迟不被停用。
+// 补跑是幂等的（条件更新 + 状态机），且与手动巡检共用互斥锁，重复触发无副作用。
 func startExpiryEnforcer(ctx context.Context, lg *slog.Logger, deps *bot.HandlerDeps, enabled bool, hour int) {
 	if !enabled || deps == nil || deps.DB == nil {
 		return
@@ -331,6 +335,15 @@ func startExpiryEnforcer(ctx context.Context, lg *slog.Logger, deps *bot.Handler
 		hour = 10
 	}
 	go func() {
+		// 稍等片刻再补跑：避开启动瞬间的其它后台任务（启动通知、备份），
+		// 也让日志顺序更易读。进程在此期间退出则直接跳过。
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(startupSweepDelay):
+		}
+		runExpirySweepOnce(ctx, lg, deps, "启动补跑")
+
 		for {
 			if ctx.Err() != nil {
 				return
@@ -340,16 +353,29 @@ func startExpiryEnforcer(ctx context.Context, lg *slog.Logger, deps *bot.Handler
 				return
 			case <-time.After(time.Until(nextLocalHour(hour))):
 			}
-			res := bot.SweepExpiredAccounts(ctx, deps)
-			if len(res.Disabled) > 0 || len(res.Restored) > 0 || res.Failed > 0 {
-				lg.Info("到期巡检完成",
-					"disabled", len(res.Disabled),
-					"restored", len(res.Restored),
-					"logged_out", res.LoggedOut,
-					"failed", res.Failed)
-			}
+			runExpirySweepOnce(ctx, lg, deps, "每日巡检")
 		}
 	}()
+}
+
+// startupSweepDelay 启动补跑前的等待时长（变量便于测试覆盖）。
+var startupSweepDelay = 30 * time.Second
+
+// runExpirySweepOnce 跑一次巡检：写日志 + 按"有动静才推"汇报管理员。
+// 与手动巡检共用 RunExpirySweep 的互斥锁，撞上时直接跳过。
+func runExpirySweepOnce(ctx context.Context, lg *slog.Logger, deps *bot.HandlerDeps, trigger string) {
+	res, ok := bot.RunExpirySweep(ctx, deps)
+	if !ok {
+		lg.Info("到期巡检跳过：已有巡检在执行", "trigger", trigger)
+		return
+	}
+	lg.Info("到期巡检完成",
+		"trigger", trigger,
+		"disabled", len(res.Disabled),
+		"restored", len(res.Restored),
+		"logged_out", res.LoggedOut,
+		"failed", res.Failed)
+	bot.NotifyAdminsSweepResult(ctx, deps, res)
 }
 
 // startExpiryNotifier 每日检查即将到期的用户，私聊提醒续费。

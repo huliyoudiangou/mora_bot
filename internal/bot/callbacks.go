@@ -216,6 +216,9 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 	case "expiry":
 		// 主面板入口：admin:expiry → 直接列出到期名单（已停用 + 未停用）
 		handleAdminExpiryList(ctx, deps, cq)
+	case "expirynow":
+		// 主面板入口：admin:expirynow → 手动触发一次到期巡检（异步，跑完私聊汇报）
+		StartManualExpirySweep(ctx, deps, cq.ChatID, cq.From.ID)
 	case "wl":
 		// 实际回调 admin:wl:add / admin:wl:del / admin:wl:list
 		// ParseCallbackData 拆成 action="wl", args=["add"|"del"|"list"]（无 args 时是进入白名单子面板）

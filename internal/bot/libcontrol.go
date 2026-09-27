@@ -174,7 +174,7 @@ func listVirtualFoldersCached(ctx context.Context, deps *HandlerDeps) ([]jellyfi
 // applyLibAccessToUser 对单个用户套用库访问：读当前 Policy → 只改库访问三项字段
 // → 写回（与 ApplyLibAccess 同模式，避免覆盖用户其它设置）。
 // 管理员检查内联（跳过 Jellyfin 管理员账户）：旧实现把「查管理员」与
-//「ApplyLibAccess 内部再读一次用户」拆成两次 API 调用（且 GetUser 走全量列表），
+// 「ApplyLibAccess 内部再读一次用户」拆成两次 API 调用（且 GetUser 走全量列表），
 // 批量应用每用户 2 次全量拉取，用户多时又慢又易超时——是「跑到一半没汇报」的根因。
 // 返回 (applied, skipped 原因, error)。
 func applyLibAccessToUser(ctx context.Context, deps *HandlerDeps, u db.User, template *jellyfin.LibAccess) (bool, string, error) {
@@ -225,6 +225,7 @@ func applyLibAccessToUser(ctx context.Context, deps *HandlerDeps, u db.User, tem
 //     （tg+原因），不再只给一个跳过总数；
 //   - 有失败时把失败清单存入内存（libRetryEntries），发送带「🔁 重试失败用户」
 //     按钮的汇报，管理员可一键只对失败用户重新执行。
+//
 // 应放 goroutine 异步执行，不阻塞消息处理。
 func applyLibAccessToAll(ctx context.Context, deps *HandlerDeps, adminID int64, targets []int64) {
 	// panic 兜底：异步任务任何异常都要给管理员一条回应，不能静默消失。
@@ -416,7 +417,7 @@ func libSkipAuditText(skips []libSkipEntry) string {
 // sendLibApplyReport 发送批量应用最终汇报（必达：独立上下文，不依赖 runCtx）。
 // 成功不逐个展示；跳过用户逐个列出（tg+原因，截前 skipListMax 个）；
 // 失败列出 tg+原因（截前 failListMax 个）；有失败时附「🔁 重试失败用户」按钮
-//（失败清单已存 libRetryEntries）。
+// （失败清单已存 libRetryEntries）。
 func sendLibApplyReport(deps *HandlerDeps, adminID int64, okN, skipN int, skips []libSkipEntry, fails []libFailEntry, aborted bool, unbound int64) {
 	failN := len(fails)
 	var b strings.Builder
@@ -497,6 +498,16 @@ func sendDetachedText(deps *HandlerDeps, chatID int64, text string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_ = deps.Snd.SendText(ctx, chatID, text)
+}
+
+// sendDetachedHTML 同 sendDetachedText，但按 HTML 解析（异步任务汇报常用粗体/换行）。
+func sendDetachedHTML(deps *HandlerDeps, chatID int64, html string) {
+	if deps == nil || deps.Snd == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = deps.Snd.SendTextHTML(ctx, chatID, html)
 }
 
 // libRetryEntries 失败用户清单（adminID → 清单 + 时间；30 分钟 TTL，
@@ -625,9 +636,9 @@ func saveOverrideAndApply(ctx context.Context, deps *HandlerDeps, u *db.User, lo
 
 // myLibStatus 用户视角的单个库状态。
 type myLibStatus struct {
-	Folder    *jellyfin.VirtualFolder
-	Allowed   bool // 是否在用户生效策略的允许范围内
-	Hidden    bool // 是否已被用户自己隐藏（MyMediaExcludes）
+	Folder  *jellyfin.VirtualFolder
+	Allowed bool // 是否在用户生效策略的允许范围内
+	Hidden  bool // 是否已被用户自己隐藏（MyMediaExcludes）
 }
 
 // computeMyLibs 计算用户视角的库列表（开放/未开放/已隐藏）。

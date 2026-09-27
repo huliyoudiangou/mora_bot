@@ -2,6 +2,8 @@ package bot
 
 import (
 	"context"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"mora_bot/internal/db"
@@ -329,4 +331,109 @@ func notifyUserText(deps *HandlerDeps, tgID int64, text string) {
 		return
 	}
 	_ = deps.Snd.SendText(context.Background(), tgID, text)
+}
+
+// ---------------------------------------------------------------------------
+// 巡检调度：互斥执行 + 结果汇报
+// ---------------------------------------------------------------------------
+
+// sweepRunning 巡检互斥标志。自动巡检（每日定时 / 启动补跑）与管理员手动触发
+// 共用，保证同一时刻只有一个巡检在跑 —— 重复跑不但白耗 Jellyfin 调用，
+// 还会让同一个用户收到两条重复通知。
+var sweepRunning atomic.Bool
+
+// RunExpirySweep 执行一次到期巡检（自动/手动共用入口）。已有巡检在执行时
+// 立即返回 ok=false，不阻塞调用方。调用方决定如何汇报（手动触发私聊发起者，
+// 自动巡检走 NotifyAdminsSweepResult）。
+func RunExpirySweep(ctx context.Context, deps *HandlerDeps) (ExpireSweep, bool) {
+	if !sweepRunning.CompareAndSwap(false, true) {
+		return ExpireSweep{}, false
+	}
+	defer sweepRunning.Store(false)
+	return SweepExpiredAccounts(ctx, deps), true
+}
+
+// sweepListMax 汇报里名单最多列出的人数（防止消息超长被 Telegram 拒发）。
+const sweepListMax = 20
+
+// expirySweepReport 巡检结果文案（管理员视角）。
+func expirySweepReport(res ExpireSweep) string {
+	var b strings.Builder
+	b.WriteString("· 停用：" + itoa64s(int64(len(res.Disabled))) + " 人\n")
+	b.WriteString("· 恢复：" + itoa64s(int64(len(res.Restored))) + " 人\n")
+	b.WriteString("· 断开在线会话：" + itoa64s(int64(res.LoggedOut)) + " 个\n")
+	if res.Failed > 0 {
+		b.WriteString("· ⚠️ 失败：" + itoa64s(int64(res.Failed)) +
+			" 人（Jellyfin 调用失败，本地状态未变，下次巡检自动重试）\n")
+	}
+	if s := previewIDs("停用名单", res.Disabled); s != "" {
+		b.WriteString(s + "\n")
+	}
+	if s := previewIDs("恢复名单", res.Restored); s != "" {
+		b.WriteString(s + "\n")
+	}
+	return b.String()
+}
+
+// previewIDs 把 tg_id 列表渲染成一行明细（截前 sweepListMax 个）。
+func previewIDs(label string, ids []int64) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	n := len(ids)
+	if n > sweepListMax {
+		n = sweepListMax
+	}
+	parts := make([]string, 0, n)
+	for _, id := range ids[:n] {
+		parts = append(parts, itoa64s(id))
+	}
+	s := label + "：" + strings.Join(parts, ", ")
+	if len(ids) > sweepListMax {
+		s += " …（共 " + itoa64s(int64(len(ids))) + " 人）"
+	}
+	return s
+}
+
+// NotifyAdminsSweepResult 把自动巡检结果私聊汇报给全体管理员。
+//
+// 只在"有动静"（真的停用/恢复/失败）时发送 —— 无事发生就静默，避免每天一条
+// "无变化"的骚扰。刻意**不做时间节流**：节流会连正常的每日汇报一起吞掉，
+// 而"有动静才推"本身已经把绝大多数噪音挡掉了。
+func NotifyAdminsSweepResult(ctx context.Context, deps *HandlerDeps, res ExpireSweep) {
+	if deps == nil || deps.Snd == nil || len(deps.SuperAdminIDs) == 0 {
+		return
+	}
+	if len(res.Disabled) == 0 && len(res.Restored) == 0 && res.Failed == 0 {
+		return // 无事发生，不打扰
+	}
+	text := "🔄 <b>到期巡检完成</b>\n" + expirySweepReport(res)
+	for _, id := range deps.SuperAdminIDs {
+		_ = deps.Snd.SendTextHTML(ctx, id, text)
+	}
+}
+
+// manualSweepTimeout 手动巡检的兜底超时。逐个用户调用 Jellyfin（每人最多 2 次、
+// 每次 15s 超时），用户多时耗时可达分钟级，必须异步执行并给足超时。
+const manualSweepTimeout = 30 * time.Minute
+
+// StartManualExpirySweep 管理员手动触发一次巡检：先回执，再异步跑，
+// 跑完私聊汇报发起者（无论有无变化 —— 是他主动要求的，必须给结果）。
+func StartManualExpirySweep(ctx context.Context, deps *HandlerDeps, replyChatID, adminID int64) {
+	sendText(ctx, deps, replyChatID, "🔄 已开始巡检，完成后会私聊汇报给你。")
+	go func() {
+		// 独立上下文：回调/命令处理返回后 ctx 会被取消，不能用于长任务。
+		rctx, cancel := context.WithTimeout(context.Background(), manualSweepTimeout)
+		defer cancel()
+		res, ok := RunExpirySweep(rctx, deps)
+		if !ok {
+			sendDetachedText(deps, adminID, "⏳ 已有巡检正在执行，请稍候再试。")
+			return
+		}
+		_ = db.WriteAudit(deps.DB, adminID, "admin_expiry_sweep", "system", "",
+			"手动巡检：停用 "+itoa64s(int64(len(res.Disabled)))+
+				"，恢复 "+itoa64s(int64(len(res.Restored)))+
+				"，失败 "+itoa64s(int64(res.Failed)))
+		sendDetachedHTML(deps, adminID, "🔄 <b>手动巡检完成</b>\n"+expirySweepReport(res))
+	}()
 }

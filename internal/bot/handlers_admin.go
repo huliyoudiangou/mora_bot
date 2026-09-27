@@ -42,6 +42,9 @@ func (r *Router) cmdAdmin(ctx context.Context, msg *Message, args []string) {
 		r.cmdAdminSuspend(ctx, msg, args[1:])
 	case "unsuspend":
 		r.cmdAdminUnsuspend(ctx, msg, args[1:])
+	case "sweep":
+		// /admin sweep：手动触发一次到期巡检（与面板「🔄 立即巡检」同一入口）。
+		StartManualExpirySweep(ctx, deps, msg.ChatID, msg.ChatID)
 	default:
 		sendText(ctx, deps, msg.ChatID, "不认识的 /admin 子命令。")
 	}

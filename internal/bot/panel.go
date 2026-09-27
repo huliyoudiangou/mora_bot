@@ -152,6 +152,9 @@ func adminPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 			{Text: "⏰ 到期名单", Data: BuildCallbackData(DKAdmin, "expiry")},
 		},
 		{
+			{Text: "🔄 立即巡检（到期停用/恢复）", Data: BuildCallbackData(DKAdmin, "expirynow")},
+		},
+		{
 			{Text: "🎟 生成邀请码", Data: BuildCallbackData(DKAdmin, "gencode")},
 			{Text: "⏳ 生成续期码", Data: BuildCallbackData(DKAdmin, "genrenew")},
 		},
