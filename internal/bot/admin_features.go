@@ -109,28 +109,9 @@ func (r *Router) handleAdminQueryUserStep(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "未找到该用户（tg_id="+itoa64s(tgID)+"）。")
 		return
 	}
-	isAdmin := deps.IsSuper != nil && deps.IsSuper(u.TelegramID)
-	perm := "否"
-	if u.IsPermanent {
-		perm = "是（白名单）"
-	}
-	expire := "无"
-	if u.ExpireAt != nil {
-		expire = u.ExpireAt.Format("2006-01-02")
-	}
-	if u.IsPermanent {
-		// 白名单用户不存在到期时间（提权时已清空），与"白名单：是"并排显示到期日会误导管理员。
-		expire = "无（白名单永久）"
-	}
-	sec := "否"
-	if u.SecurityCodeHash != "" {
-		sec = "是"
-	}
-	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
-		"👤 <b>tg=%d</b>\n用户名：%s %s\nJellyfin：%s（%s）\n果果币：%d\n状态：%s\n白名单：%s\n到期：%s\n连签：%d 天\n安全码：%s\n管理员：%v",
-		u.TelegramID, escapeHTML(u.FirstName), escapeHTML(u.LastName),
-		escapeHTML(u.JellyfinUsername), escapeHTML(u.JellyfinUserID),
-		u.GuoGuo, u.Status, perm, expire, u.SignStreak, sec, isAdmin))
+	// 卡片带「🚫 停用账号 / ✅ 解除停用」按钮：查询与处置在同一处完成。
+	text, rows := adminUserCard(deps, &u)
+	sendPanel(ctx, deps, msg.ChatID, 0, text, rows)
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +291,7 @@ func (r *Router) handleAdminWLStep(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, resp)
 	default: // add
 		wasExpired := u.Status == db.UserStatusExpired
+		wasSuspended := accountSuspended(&u)
 		updates := map[string]any{
 			"is_permanent": true,
 			// 提权即永久：同时清空原到期时间。残留的 expire_at 会带来三类问题——
@@ -318,9 +300,11 @@ func (r *Router) handleAdminWLStep(ctx context.Context, msg *Message) {
 			// ③ 任何按 ExpireAt 判断的路径都可能对白名单用户误判。
 			"expire_at": nil,
 		}
-		// 被到期停用的账号交给 restoreIfExpired 恢复（先启用 Jellyfin 再改状态），
-		// 这里不能先把 status 写成 active，否则 Jellyfin 侧启用失败会留下不一致。
-		if !wasExpired {
+		// 提权不改写"停用"状态：
+		//   · expired 交给 restoreIfExpired 恢复（先启用 Jellyfin 再改状态），这里不能
+		//     先写 active，否则 Jellyfin 侧启用失败会留下不一致；
+		//   · inactive（管理员手动停用）保持停用 —— 提权绝不能成为绕过停用的通道。
+		if !wasExpired && !wasSuspended {
 			updates["status"] = db.UserStatusActive
 		}
 		err := deps.DB.Model(&u).Updates(updates).Error
@@ -332,7 +316,11 @@ func (r *Router) handleAdminWLStep(ctx context.Context, msg *Message) {
 			restoreIfExpired(ctx, deps, tgID)
 		}
 		_ = db.WriteAudit(deps.DB, msg.From.ID, "admin_whitelist_add", "user", itoa64s(tgID), "添加白名单")
-		sendText(ctx, deps, msg.ChatID, fmt.Sprintf("✅ 已添加白名单：tg=%d（永久有效，不受规则约束，无需保号；原到期时间已清除，不会再收到到期提醒）", tgID))
+		resp := fmt.Sprintf("✅ 已添加白名单：tg=%d（永久有效，不受规则约束，无需保号；原到期时间已清除，不会再收到到期提醒）", tgID)
+		if wasSuspended {
+			resp += "\n⚠️ 该账号当前处于「管理员停用」状态，提权不会解封；如需恢复请先解除停用。"
+		}
+		sendText(ctx, deps, msg.ChatID, resp)
 	}
 }
 

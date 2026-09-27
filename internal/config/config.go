@@ -73,8 +73,6 @@ type Config struct {
 	WorkerCount int
 	// 更新队列容量（QUEUE_CAPACITY）
 	QueueCapacity int
-	// 注册 handler 超时秒（BOT_ADD_HANDLER_TIMEOUT_SECONDS）
-	BotAddHandlerTimeout int
 }
 
 // Load reads an optional .env next to the working directory and builds Config.
@@ -109,7 +107,6 @@ func Load() (*Config, error) {
 		BackupGroupID:          envInt64("BACKUP_GROUP_ID", 0),
 		WorkerCount:            envInt("WORKER_COUNT", 32),
 		QueueCapacity:          envInt("QUEUE_CAPACITY", 512),
-		BotAddHandlerTimeout:   envInt("BOT_ADD_HANDLER_TIMEOUT_SECONDS", 30),
 	}
 	return c, nil
 }

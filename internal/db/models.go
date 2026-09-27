@@ -15,11 +15,10 @@ import (
 
 const (
 	UserStatusActive   = "active"   // 正常
-	UserStatusInactive = "inactive" // 管理员在本地停用（与 Jellyfin 侧禁用区分开）
-	UserStatusDisabled = "disabled" // 与 UserStatusInactive 同义的别名（回调/管理面板用）
+	UserStatusInactive = "inactive" // 管理员手动停用（封禁）
 	UserStatusDeleted  = "deleted"  // 用户自助注销（档案保留，账号已删/已解绑）
 	// UserStatusExpired 订阅到期，系统自动停用 Jellyfin 账号（续期或加入白名单后自动恢复）。
-	// 与 inactive/disabled 区分开：管理员手动停用的账号不会被到期巡检自动恢复。
+	// 与 inactive 区分开：管理员手动停用的账号不会被到期巡检自动恢复，只能由管理员解封。
 	UserStatusExpired = "expired"
 
 	BindTypeRegistered = "registered" // 通过邀请码新建的 Jellyfin 账号
@@ -28,17 +27,19 @@ const (
 
 // User 本地用户档案。主键即 Telegram ID。
 type User struct {
-	TelegramID         int64  `gorm:"primaryKey"`
-	TgUsername         string `gorm:"size:64"`
-	FirstName          string `gorm:"size:64"`
-	LastName           string `gorm:"size:64"`
-	GuoGuo             int    `gorm:"default:0"` // 果果币余额
-	JellyfinUserID     string `gorm:"size:64;index"`
-	JellyfinUsername   string `gorm:"size:128"`
-	BindType           string `gorm:"size:16"` // registered / existing
-	ExpireAt           *time.Time
-	IsPermanent        bool   `gorm:"default:false"` // 白名单/永久不过期
-	IsSuspended        bool   `gorm:"default:false"` // 封禁（含 Jellyfin 侧同步禁用）
+	TelegramID       int64  `gorm:"primaryKey"`
+	TgUsername       string `gorm:"size:64"`
+	FirstName        string `gorm:"size:64"`
+	LastName         string `gorm:"size:64"`
+	GuoGuo           int    `gorm:"default:0"` // 果果币余额
+	JellyfinUserID   string `gorm:"size:64;index"`
+	JellyfinUsername string `gorm:"size:128"`
+	BindType         string `gorm:"size:16"` // registered / existing
+	ExpireAt         *time.Time
+	IsPermanent      bool `gorm:"default:false"` // 白名单/永久不过期
+	// SuspendReason 管理员手动停用的理由（仅作留痕，不参与任何判定）。
+	// 「是否被停用」的唯一真相是 Status == UserStatusInactive，不另设布尔字段——
+	// 双份真相在并发与部分更新下必然不一致。
 	SuspendReason      string `gorm:"size:256"`
 	Status             string `gorm:"size:16;default:active;index"`
 	LastSignAt         *time.Time

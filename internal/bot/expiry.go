@@ -23,8 +23,8 @@ type ExpireSweep struct {
 //
 // 幂等性：状态转换（active↔expired）只发生一次，通知因此天然不重复；条件更新
 // （WHERE status = 旧值）保证与并发续期/提权不打架。Jellyfin 调用失败的用户不做
-// 本地状态变更，留待下次巡检重试；管理员手动停用（inactive/disabled）与已注销
-// （deleted）的账号一概不碰。
+// 本地状态变更，留待下次巡检重试；管理员手动停用（inactive）与已注销
+// （deleted）的账号一概不碰 —— inactive 只能由管理员解封，巡检无权恢复。
 func SweepExpiredAccounts(ctx context.Context, deps *HandlerDeps) ExpireSweep {
 	var res ExpireSweep
 	if deps == nil || deps.DB == nil {
@@ -209,6 +209,45 @@ func resetExpireForNewCycle(deps *HandlerDeps, u *db.User) error {
 
 // bindExpiredText /bind 被订阅到期阻断时的提示（入口与写入前共用）。
 const bindExpiredText = "你的订阅已到期（Jellyfin 账号处于停用状态），请先续期：/shop buy 后再 /redeem。"
+
+// releaseExpiredBindingForReregister 到期用户重新注册前清理旧绑定。
+//
+// 只有旧账号是 bot 创建的（bind_type=registered）才删除远端账号：那种账号本就是本 bot
+// 发放的、此刻又处于到期停用状态，留着只会占用 Jellyfin 用户名（用户重新注册往往想用回
+// 同一个名字，同名会被判为"用户名已占用"）并变成孤儿。用户自己绑定的既有账号
+// （bind_type=existing）绝不删除，本地关联交给注册成功后的写入覆盖。
+//
+// 返回 true 表示远端旧账号已删除、本地绑定已同步清空（与远端保持一致）。
+// 远端删除失败时返回错误：此时不能当作已清理继续注册，否则同名创建必然失败。
+func releaseExpiredBindingForReregister(ctx context.Context, deps *HandlerDeps, tgID int64) (bool, error) {
+	if deps == nil || deps.DB == nil {
+		return false, db.ErrNilDB
+	}
+	var u db.User
+	if err := deps.DB.Where("telegram_id = ?", tgID).First(&u).Error; err != nil {
+		return false, nil // 无档案：按全新注册处理
+	}
+	if u.JellyfinUserID == "" || u.BindType != db.BindTypeRegistered || deps.JF == nil {
+		return false, nil
+	}
+	// 纵深守卫：只有"已到期"的账号才该被重新注册流程清理。入口已按同一判定拦过，
+	// 这里再判一次，避免该函数被别处误用后删掉正常在用账号。
+	if !expiryBlockedForBind(&u, time.Now()) {
+		return false, nil
+	}
+	if err := deps.JF.DeleteUser(ctx, u.JellyfinUserID); err != nil {
+		return false, err
+	}
+	if err := deps.DB.Model(&db.User{}).Where("telegram_id = ?", tgID).
+		Updates(map[string]any{
+			"jellyfin_user_id":  "",
+			"jellyfin_username": "",
+			"bind_type":         "",
+		}).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
 
 // expiryBlockedForBind /bind 是否被订阅到期阻断。
 // /bind 不需要邀请码，若放行则任何到期用户都能靠重新绑定免费重置订阅；且此时

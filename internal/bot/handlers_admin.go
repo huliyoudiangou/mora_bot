@@ -37,6 +37,11 @@ func (r *Router) cmdAdmin(ctx context.Context, msg *Message, args []string) {
 		r.handleAdminAddPoints(ctx, msg, args[1:])
 	case "user":
 		r.handleAdminUser(ctx, msg, args[1:])
+	case "suspend":
+		// /admin suspend [tg_id] [理由]：不带参数则列出当前停用名单。
+		r.cmdAdminSuspend(ctx, msg, args[1:])
+	case "unsuspend":
+		r.cmdAdminUnsuspend(ctx, msg, args[1:])
 	default:
 		sendText(ctx, deps, msg.ChatID, "不认识的 /admin 子命令。")
 	}
@@ -45,25 +50,27 @@ func (r *Router) cmdAdmin(ctx context.Context, msg *Message, args []string) {
 // handleAdminStats /admin stats 汇总。
 func (r *Router) handleAdminStats(ctx context.Context, msg *Message) {
 	deps := r.deps
-	var total, bound, pointsUsers, expired, perms int64
+	var total, bound, pointsUsers, expired, suspended, perms int64
 	deps.DB.Model(&db.User{}).Count(&total)
 	deps.DB.Model(&db.User{}).Where("jellyfin_user_id <> ''").Count(&bound)
 	deps.DB.Model(&db.User{}).Where("guo_guo > 0").Count(&pointsUsers)
-	// 到期停用人数与白名单人数：运营视角关注"多少人被停用、多少人是永久"。
+	// 到期停用 / 管理员手动停用 / 白名单人数：运营视角关注"多少人被停用、多少人是永久"。
 	deps.DB.Model(&db.User{}).Where("status = ?", db.UserStatusExpired).Count(&expired)
+	deps.DB.Model(&db.User{}).Where("status = ?", db.UserStatusInactive).Count(&suspended)
 	deps.DB.Model(&db.User{}).Where("is_permanent = ?", true).Count(&perms)
 	var inviteUnused, renewalUnused int64
 	// 按 status 统计：revoked（已作废）的码 used_by 为空，但不应计入"未用"。
 	deps.DB.Model(&db.InviteCode{}).Where("status = ?", db.CodeStatusUnused).Count(&inviteUnused)
 	deps.DB.Model(&db.RenewalCode{}).Where("status = ?", db.CodeStatusUnused).Count(&renewalUnused)
 	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
-		"<b>全局统计</b>\n\n用户：%d（已绑定 %d / 有余额 %d）\n已到期停用：%d　白名单：%d\n邀请码未用：%d\n续期码未用：%d",
-		total, bound, pointsUsers, expired, perms, inviteUnused, renewalUnused))
+		"<b>全局统计</b>\n\n用户：%d（已绑定 %d / 有余额 %d）\n已到期停用：%d　管理员停用：%d　白名单：%d\n邀请码未用：%d\n续期码未用：%d",
+		total, bound, pointsUsers, expired, suspended, perms, inviteUnused, renewalUnused))
 }
 
 // handleAdminGenCode /admin gencode <数量> [invite|renewal] [天数]
 // 例如：/admin gencode 5            → 生成 5 张邀请码
-//       /admin gencode 3 renewal 30 → 生成 3 张 30 天续期码
+//
+//	/admin gencode 3 renewal 30 → 生成 3 张 30 天续期码
 func (r *Router) handleAdminGenCode(ctx context.Context, msg *Message, args []string) {
 	deps := r.deps
 	if len(args) == 0 {
@@ -284,8 +291,7 @@ func (r *Router) handleAdminUser(ctx context.Context, msg *Message, args []strin
 		sendText(ctx, deps, msg.ChatID, "未找到该用户。")
 		return
 	}
-	isAdmin := deps.IsSuper != nil && deps.IsSuper(u.TelegramID)
-	sendHTML(ctx, deps, msg.ChatID, fmt.Sprintf(
-		"👤 tg=%d\n用户名：%s %s\nJF：%s（%s）\n果果币：%d\n状态：%s\n管理员：%v",
-		u.TelegramID, escapeHTML(u.TgUsername), escapeHTML(u.FirstName), escapeHTML(u.JellyfinUsername), escapeHTML(u.JellyfinUserID), u.GuoGuo, u.Status, isAdmin))
+	// 与面板「查询用户」同款卡片：带停用/解封按钮。
+	text, rows := adminUserCard(deps, &u)
+	sendPanel(ctx, deps, msg.ChatID, 0, text, rows)
 }

@@ -156,17 +156,18 @@ func adminPanel(deps *HandlerDeps, u *db.User) (string, [][]KeyboardButton) {
 		},
 		{
 			{Text: "👤 查询用户", Data: BuildCallbackData(DKAdmin, "quser")},
+			{Text: "🚫 停用/解封", Data: BuildCallbackData(DKAdmin, "suspend")},
+		},
+		{
 			{Text: "✅ 白名单", Data: BuildCallbackData(DKAdmin, "whitelist")},
-		},
-		{
 			{Text: "🏷 卡密定价", Data: BuildCallbackData(DKAdmin, "prices")},
+		},
+		{
 			{Text: "🌐 线路管理", Data: BuildCallbackData(DKAdmin, "lines")},
-		},
-		{
 			{Text: "🔓 注册与兑换", Data: BuildCallbackData(DKAdmin, "reg")},
-			{Text: "🎫 工单管理", Data: BuildCallbackData(DKAdmin, "tickets")},
 		},
 		{
+			{Text: "🎫 工单管理", Data: BuildCallbackData(DKAdmin, "tickets")},
 			{Text: "📚 媒体库访问控制", Data: BuildCallbackData(DKAdmin, "lib")},
 		},
 		{

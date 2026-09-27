@@ -95,6 +95,9 @@ func (r *Router) continueSession(ctx context.Context, msg *Message) bool {
 	case sessAdminDramaRej:
 		r.handleAdminDramaRejectStep(ctx, msg)
 		return true
+	case sessAdminSuspend:
+		r.handleAdminSuspendStep(ctx, msg)
+		return true
 	case sessAdminLibSessions:
 		r.handleAdminLibSessionsStep(ctx, msg)
 		return true

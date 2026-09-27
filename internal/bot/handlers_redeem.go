@@ -27,6 +27,12 @@ func (r *Router) cmdRedeem(ctx context.Context, msg *Message, args []string) {
 		sendText(ctx, deps, msg.ChatID, "管理员未配置 SECURITY_PEPPER，卡密功能暂不可用。")
 		return
 	}
+	// 被管理员停用的账号不接受续期：续期只改到期时间，解封权在管理员手里，
+	// 现在核销只会白白消耗一张续期码（卡密不消耗、留待解封后再用）。
+	if accountSuspended(u) {
+		sendText(ctx, deps, msg.ChatID, suspendBlockedText)
+		return
+	}
 
 	days, newExpire, err := redeemRenewalCode(deps, u, code)
 	if err != nil {
@@ -63,6 +69,12 @@ func (r *Router) handleRedeemStep(ctx context.Context, msg *Message) {
 	if deps.Pepper == "" {
 		sendText(ctx, deps, msg.ChatID, "管理员未配置 SECURITY_PEPPER，卡密功能暂不可用。")
 		deps.Sessions.Clear(msg.From.ID)
+		return
+	}
+	// 被管理员停用的账号不接受续期（见 cmdRedeem 注释）：清会话避免卡在向导里。
+	if accountSuspended(u) {
+		deps.Sessions.Clear(msg.From.ID)
+		sendText(ctx, deps, msg.ChatID, suspendBlockedText)
 		return
 	}
 

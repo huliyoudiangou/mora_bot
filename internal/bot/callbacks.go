@@ -203,6 +203,13 @@ func handleAdminCallback(ctx context.Context, deps *HandlerDeps, cq *CallbackQue
 	case "quser":
 		deps.Sessions.Begin(cq.From.ID, sessAdminQueryUser)
 		sendHTML(ctx, deps, cq.ChatID, "👤 查询用户\n请输入要查询的用户的 <b>tg_id</b>：\n\n回复 /cancel 可取消。")
+	case "suspend":
+		// 主面板入口：admin:suspend → 复用「查询用户」向导，卡片上带停用/解封按钮。
+		deps.Sessions.Begin(cq.From.ID, sessAdminQueryUser)
+		sendHTML(ctx, deps, cq.ChatID, "🚫 停用/解封账号\n请输入目标用户的 <b>tg_id</b>：\n\n回复 /cancel 可取消。")
+	case "user":
+		// admin:user:suspend:<tg_id> / admin:user:unsuspend:<tg_id>（用户卡片上的按钮）
+		handleAdminUserAction(ctx, deps, cq, args)
 	case "whitelist":
 		// 主面板入口：admin:whitelist → 打开白名单子面板
 		sendAdminSub(ctx, deps, cq, "whitelist")

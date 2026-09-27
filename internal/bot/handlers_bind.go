@@ -41,6 +41,7 @@ const (
 	sessAdminQuota     = "admin_set_quota"  // 设置积分兑换邀请码配额：收整数
 	sessAdminRegQuota  = "admin_reg_quota"  // 设置开注名额：收非负整数（>0 自动开启新一轮开注）
 	sessAdminDramaRej  = "admin_drama_rej"  // 求剧工单驳回：收理由（Data.req_id/msg_id）
+	sessAdminSuspend   = "admin_suspend"    // 手动停用账号：收停用理由（Data.tg_id）
 
 	// 媒体库控制会话
 	sessAdminLibSessions = "admin_lib_sessions" // 设置模板并发上限：收非负整数（0=不限）
@@ -65,9 +66,27 @@ func (r *Router) cmdRegister(ctx context.Context, msg *Message, args []string) {
 		sendText(ctx, deps, msg.ChatID, "查询失败，请稍后再试。")
 		return
 	}
-	if u.JellyfinUserID != "" {
-		sendText(ctx, deps, msg.ChatID, "你已有关联的 Jellyfin 账号，无需重复注册。如需更换请先解绑。")
+	// 管理员手动停用的账号不能自助恢复：/register 能新建 Jellyfin 账号并把 status
+	// 写回 active，若放行等于给了被停用用户一条"重新注册即解封"的后门。
+	if accountSuspended(u) {
+		sendText(ctx, deps, msg.ChatID, suspendBlockedText)
 		return
+	}
+	// 已到期的账号允许直接重新注册（覆盖旧绑定）：它在 Jellyfin 侧已被停用，强迫用户
+	// 先 /account unbind 只是多余一步，而"注册即开启新订阅周期"的既有逻辑正好把
+	// expire_at 重置成新周期。非到期的已绑定账号仍然拒绝，避免误覆盖正在使用的账号。
+	// 旧账号的清理见 releaseExpiredBindingForReregister（仅 bot 创建的账号才会被删）。
+	reregister := false
+	if u.JellyfinUserID != "" {
+		if !expiryBlockedForBind(u, time.Now()) {
+			sendText(ctx, deps, msg.ChatID, "你已有关联的 Jellyfin 账号，无需重复注册。如需更换请先解绑。")
+			return
+		}
+		reregister = true
+	}
+	prefix := ""
+	if reregister {
+		prefix = "（检测到你的账号已到期，将为你重新开通并开启新的订阅周期）\n"
 	}
 	if registrationAvailable(ctx, deps) {
 		// 开注：免邀请码，直接收用户名（显示剩余名额，-1=不限）
@@ -77,12 +96,12 @@ func (r *Router) cmdRegister(ctx context.Context, msg *Message, args []string) {
 		}
 		deps.Sessions.Begin(msg.From.ID, sessRegUsername)
 		sendText(ctx, deps, msg.ChatID,
-			fmt.Sprintf("📝 注册新账号（开注中，免邀请码）\n剩余名额：%s\n第 1/3 步：请设置你的 Jellyfin 用户名。", rem))
+			fmt.Sprintf("📝 注册新账号（开注中，免邀请码）\n%s剩余名额：%s\n第 1/3 步：请设置你的 Jellyfin 用户名。", prefix, rem))
 		return
 	}
 	deps.Sessions.Begin(msg.From.ID, sessRegInvite)
 	sendText(ctx, deps, msg.ChatID,
-		"📝 注册新账号（需邀请码）\n第 1/4 步：请发送你的邀请码。")
+		"📝 注册新账号（需邀请码）\n"+prefix+"第 1/4 步：请发送你的邀请码。")
 }
 
 // handleRegStepInvite 注册第 1 步，收邀请码。
@@ -162,6 +181,23 @@ func (r *Router) handleRegStepSecurity(ctx context.Context, msg *Message) {
 	if deps.Pepper == "" {
 		deps.Sessions.Clear(msg.From.ID)
 		sendText(ctx, deps, msg.ChatID, "管理员未配置 SECURITY_PEPPER，暂无法完成注册，请联系管理员。")
+		return
+	}
+	// 最后一步实时复核账号是否被管理员停用：注册会话最长存活 30 分钟，管理员完全可能
+	// 在此期间停用该用户；不拦的话"重新注册"就成了绕过停用的通道（注册会把 status 写回 active）。
+	var cur struct{ Status string }
+	if err := deps.DB.Model(&db.User{}).Select("status").
+		Where("telegram_id = ?", msg.From.ID).Scan(&cur).Error; err == nil &&
+		cur.Status == db.UserStatusInactive {
+		deps.Sessions.Clear(msg.From.ID)
+		sendText(ctx, deps, msg.ChatID, suspendBlockedText)
+		return
+	}
+	// 到期用户重新注册：先清理旧的 bot 账号（仅 bind_type=registered），否则同名创建
+	// 会被 Jellyfin 判为"用户名已占用"。失败即中止，让用户重试（此时本地绑定未改动）。
+	if _, err := releaseExpiredBindingForReregister(ctx, deps, msg.From.ID); err != nil {
+		deps.Sessions.Clear(msg.From.ID)
+		sendText(ctx, deps, msg.ChatID, "清理旧的到期账号失败，请稍后再试；多次失败请联系管理员。")
 		return
 	}
 	secHash, err := codes.HashSecurityCode(secCode, deps.Pepper)
@@ -289,6 +325,12 @@ func (r *Router) cmdBind(ctx context.Context, msg *Message, args []string) {
 		sendText(ctx, deps, msg.ChatID, "查询失败，请稍后再试。")
 		return
 	}
+	// 管理员手动停用的账号不允许绑定：/bind 免邀请码，放行等于让被停用用户
+	// 换个 Jellyfin 账号继续使用。
+	if accountSuspended(u) {
+		sendText(ctx, deps, msg.ChatID, suspendBlockedText)
+		return
+	}
 	// 到期用户不允许绑定：/bind 免邀请码，不能成为"重新绑定即免费重置订阅"的后门。
 	if expiryBlockedForBind(u, time.Now()) {
 		sendText(ctx, deps, msg.ChatID, bindExpiredText)
@@ -389,7 +431,11 @@ func (r *Router) handleBindExistPw(ctx context.Context, msg *Message) {
 		sendText(ctx, deps, msg.ChatID, "本地更新失败，稍后再试。")
 		return
 	}
-	// 写入前再挡一次（入口已挡，防向导中途订阅到期）。
+	// 写入前再挡一次（入口已挡，防向导中途被管理员停用或订阅到期）。
+	if accountSuspended(u) {
+		sendText(ctx, deps, msg.ChatID, suspendBlockedText)
+		return
+	}
 	if expiryBlockedForBind(u, time.Now()) {
 		sendText(ctx, deps, msg.ChatID, bindExpiredText)
 		return
