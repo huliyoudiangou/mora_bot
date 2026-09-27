@@ -363,7 +363,7 @@ func startExpiryNotifier(ctx context.Context, lg *slog.Logger, gdb *gorm.DB, bot
 			}
 			_ = gdb.Model(&db.User{}).
 				Select("telegram_id", "expire_at", "is_permanent").
-				Where("is_permanent = ? AND expire_at IS NOT NULL AND expire_at >= ? AND expire_at <= ? AND status = ?", false, from, to, "active").
+				Where("is_permanent = ? AND expire_at IS NOT NULL AND expire_at >= ? AND expire_at <= ? AND status = ?", false, from, to, db.UserStatusActive).
 				Find(&users).Error
 			for _, u := range users {
 				// 二次校验：查询条件之外再挡一道（白名单/无到期时间一律不提醒）。
